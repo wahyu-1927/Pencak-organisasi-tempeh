@@ -1,0 +1,25 @@
+{
+  "name": "Pencak Organisasi Tempeh",
+  "short_name": "PO Tempeh",
+  "description": "Aplikasi Pencak Organisasi Ranting Tempeh, Lumajang \u2014 anggota, jadwal, absensi, kas, dan KTA.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
