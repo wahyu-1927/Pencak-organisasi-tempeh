@@ -639,6 +639,16 @@ function sbUpdateOnly(table, row, match){
    uniknya). Bila tetap tidak ketemu, hasilnya error jujur
    "Baris tidak ditemukan di server" — bukan INSERT diam-diam. */
 function sbUpdateRanting(patch, num){
+  /* Kolom num WAJIB selalu ikut terkirim, dengan nilai yang sama
+     dengan number. Baris ranting di server pernah tersimpan dengan
+     num kosong; akibatnya UPDATE yang dicocokkan pada num tidak
+     menemukan barisnya, dan saat aplikasi dimuat ulang baris itu
+     tidak ketemu sehingga yang tampil data lama. Dengan num selalu
+     terisi di sini, semua jalur simpan ranting (Profil Ranting,
+     Edit Ranting, QRIS, Data Diri) ikut memperbaikinya — termasuk
+     lewat jalur cadangan yang dicocokkan pada number di bawah. */
+  patch.num=num;
+  if(patch.number===undefined) patch.number=num;
   return sbUpdateOnly('ranting', patch, { num:num }).then(function(res){
     if(res.ok) return res;
     if(res.error==='Baris tidak ditemukan di server'){
@@ -2933,7 +2943,11 @@ function savePersonalSiswa(){
   siswaFotoDraft=''; siswaFotoSource='';
   var jobs=[];
   if(Object.keys(patch).length) jobs.push(sbSync('students', patch, { kta:s.kta }, studentRow(s)));
-  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbSync('accounts', { name:nama }, { email:currentUser.email }, { email:currentUser.email, role:currentUser.role, name:nama, ranting_num:currentUser.rantingNum })); }
+  /* Akun: UPDATE saja, hanya kolom yang berubah. JANGAN sbSync —
+     sbSync beralih ke INSERT bila UPDATE tidak mengembalikan baris,
+     dan INSERT ke accounts mengirim password_hash null (kolom itu
+     NOT NULL di server) sehingga simpan Data Diri ditolak. */
+  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateOnly('accounts', { name:nama }, { email:currentUser.email })); }
   enterApp(); goMenu('pengaturan');
   if(jobs.length) sbToastResult(Promise.all(jobs).then(function(rs){ for(var i=0;i<rs.length;i++) if(!rs[i].ok) return rs[i]; return { ok:true }; }), 'Data diri tersimpan — KTA kamu sudah memakai data & foto terbaru.');
   else toast('Tidak ada perubahan data diri.');
@@ -2954,7 +2968,12 @@ function savePersonalDiri(){
       if(Object.keys(patch).length){ patch.number=r.num; r.pelatih=nama; r.waPelatih=waFixed; jobs.push(sbUpdateRanting(patch, r.num)); }
     }
   }
-  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbSync('accounts', { name:nama }, { email:currentUser.email }, { email:currentUser.email, role:currentUser.role, name:nama, ranting_num:currentUser.rantingNum })); }
+  /* Akun: UPDATE saja, hanya kolom yang berubah, dan password_hash
+     TIDAK PERNAH ikut dikirim. JANGAN sbSync — sbSync beralih ke
+     INSERT bila UPDATE tidak mengembalikan baris, dan INSERT ke
+     accounts mengirim password_hash null (kolom itu NOT NULL di
+     server) sehingga simpan Data Diri pelatih ditolak server. */
+  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateOnly('accounts', { name:nama }, { email:currentUser.email })); }
   enterApp(); goMenu('pengaturan');
   if(jobs.length) sbToastResult(Promise.all(jobs).then(function(rs){ for(var i=0;i<rs.length;i++) if(!rs[i].ok) return rs[i]; return { ok:true }; }), 'Data diri tersimpan.');
   else toast('Tidak ada perubahan data diri.');
