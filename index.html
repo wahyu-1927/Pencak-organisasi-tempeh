@@ -360,14 +360,16 @@ footer.site{border-top:1px solid var(--line);margin-top:32px;padding:16px 0 6px;
 
 <div id="toast" class="toast hidden" role="status"></div>
 
-<!-- Crop / edit foto Profil Ranting: geser, zoom, putar sebelum disimpan -->
+<!-- Crop foto: kotak crop 3:4 yang bisa digeser & diubah ukurannya.
+     Hasil crop selalu 600x800 piksel (rasio pas foto 3:4) — ukuran
+     yang pas untuk foto KTA dan foto profil akun. -->
 <div id="crop-modal" class="crop-modal hidden" role="dialog" aria-modal="true" aria-label="Crop foto">
   <div class="crop-box">
-    <h3 id="crop-title">Crop / Edit Foto</h3>
-    <p class="small muted" style="margin:6px 0 0">Geser foto untuk mengatur posisi, pakai penggeser Perbesar untuk zoom, atau tombol Putar bila foto miring. Yang terlihat di dalam bingkai inilah yang akan disimpan.</p>
-    <div class="crop-stage"><canvas id="crop-canvas" width="640" height="480"></canvas></div>
-    <label class="f" for="crop-zoom">Perbesar</label>
-    <input type="range" id="crop-zoom" min="100" max="300" value="100" oninput="cropSetZoom(parseInt(this.value,10))" />
+    <h3 id="crop-title">Crop Foto</h3>
+    <p class="small muted" style="margin:6px 0 0">Seret <b>kotak crop</b> untuk menggesernya, seret <b>pegangan di pojok kanan bawah kotak</b> (atau pakai penggeser Ukuran Kotak) untuk memperbesar / memperkecilnya. Hanya bagian di dalam kotak yang disimpan, sebagai foto <b>600&times;800 piksel (rasio 3:4)</b> — pas untuk KTA dan foto profil.</p>
+    <div class="crop-stage"><canvas id="crop-canvas" width="640" height="520"></canvas></div>
+    <label class="f" for="crop-size">Ukuran Kotak Crop</label>
+    <input type="range" id="crop-size" min="30" max="100" value="80" oninput="cropSetSize(parseInt(this.value,10))" />
     <div class="btnrow"><button class="btn small" onclick="cropRotate()">Putar 90&deg;</button><button class="btn small" onclick="cropReset()">Atur Ulang</button></div>
     <div class="btnrow"><button class="btn gold" onclick="cropApply()">Pakai Hasil Crop</button><button class="btn" onclick="closeFotoCropper()">Batal</button></div>
   </div>
@@ -818,6 +820,7 @@ var payProofData = '';    /* bukti bayar (data URL) selama sesi */
 var profilRantingSelected = null; /* nomor ranting yang detail Profil Ranting-nya dibuka */
 var profilFotoDraft = ''; /* foto profil ranting hasil crop, menunggu disimpan */
 var profilFotoSource = ''; /* sumber foto terakhir yang dipilih (data URL), untuk di-crop ulang */
+var profilEditOpen = false; /* form Edit Profil Ranting tampil hanya setelah tombol Edit diklik */
 var siswaFotoDraft = ''; /* foto siswa hasil crop di Pengaturan, menunggu disimpan */
 var siswaFotoSource = ''; /* sumber foto siswa terakhir yang dipilih (data URL), untuk di-crop ulang */
 var siswaListScope = null; /* cakupan daftar siswa dari kartu beranda: null = semua ranting */
@@ -1178,7 +1181,7 @@ function renderMenus(){
     return '<button class="chip'+(currentMenu===m[0]?' on':'')+'" onclick="goMenu(\''+m[0]+'\')">'+m[1]+'</button>';
   }).join('');
 }
-function goMenu(m){ if(m==='profil' && currentUser && currentUser.role!=='admin_ranting') profilRantingSelected=null; currentMenu=m; renderMenus(); renderContent(); window.scrollTo(0,0); }
+function goMenu(m){ if(m==='profil'){ profilEditOpen=false; if(currentUser && currentUser.role!=='admin_ranting') profilRantingSelected=null; } currentMenu=m; renderMenus(); renderContent(); window.scrollTo(0,0); }
 function myStudent(){ return currentUser&&currentUser.studentKta? studentByKta(currentUser.studentKta):null; }
 function scopeRanting(){ /* ranting yang boleh dikelola user ini; null = semua */
   if(currentUser.role==='admin_ranting'||currentUser.role==='alumni') return currentUser.rantingNum;
@@ -2231,7 +2234,7 @@ function scanAttend(){
 
 /* ---------------- Profil Ranting (Admin Ranting / Operator / Admin Utama) ---------------- */
 function goProfilRanting(num){
-  profilRantingSelected=num; profilFotoDraft=''; profilFotoSource='';
+  profilRantingSelected=num; profilFotoDraft=''; profilFotoSource=''; profilEditOpen=false;
   currentMenu='profil'; renderMenus(); renderContent(); window.scrollTo(0,0);
 }
 function profilFotoHTML(r, big){
@@ -2251,21 +2254,12 @@ function profilCardHTML(r){
     +'<div class="stat"><b>'+aktif+'</b><span>Jumlah siswa aktif</span></div>'
     +'<div class="stat"><b style="font-size:16px;padding-top:4px">'+(next? esc(next.hari)+' • '+esc(next.jam):'Belum ada jadwal')+'</b><span>Jadwal latihan berikutnya</span></div>'
     +'</div>'
-    +'<p class="small gold" style="margin:12px 0 0;font-weight:800">Klik untuk buka detail, unduh laporan &amp; data siswa &rarr;</p></div>';
+    +'<p class="small gold" style="margin:12px 0 0;font-weight:800">Klik untuk buka detail &amp; unduh laporan &rarr;</p></div>';
   return h;
-}
-function profilSiswaListHTML(r){
-  var list=DB.students.filter(function(s){ return s.rantingNum===r.num; }).slice().sort(function(a,b){ return a.name.localeCompare(b.name); });
-  if(!list.length) return '<div class="empty">Belum ada siswa terdaftar di '+esc(r.name)+'.</div>';
-  return '<div class="tablewrap stacktable"><table><thead><tr><th>Nama Siswa</th><th>Nomor KTA</th><th>Sabuk</th><th>Status</th><th>Kehadiran</th><th>Kas Bulan Ini</th><th>Sekolah</th><th>Pelatih</th></tr></thead><tbody>'
-    +list.map(function(s){ var pct=attPct(s.kta);
-      return '<tr><td data-l="Nama"><b>'+esc(s.name)+'</b></td><td data-l="KTA">'+esc(s.kta)+'</td><td data-l="Sabuk">'+esc(s.sabuk)+'</td><td data-l="Status">'+esc(s.status)+'</td><td data-l="Kehadiran">'+(pct===null?'—':pct+'%')+'</td><td data-l="Kas">'+esc(kasStatusBulanIni(s.kta).status)+'</td><td data-l="Sekolah">'+esc(s.sekolah||'-')+'</td><td data-l="Pelatih">'+esc(s.pelatih||'-')+'</td></tr>'; }).join('')
-    +'</tbody></table></div>'
-    +'<p class="small muted">Total '+list.length+' siswa terdaftar di ranting ini ('+studentsOfRanting(r.num).length+' aktif).</p>';
 }
 function profilDetailHTML(r){
   var sal=saldoRanting(r.num), kp=rantingKeaktifan(r.num), aktif=studentsOfRanting(r.num).length;
-  var next=rantingNextSchedule(r.num), pelatih=rantingPelatihName(r), wa=rantingWaPelatih(r);
+  var next=rantingNextSchedule(r.num), pelatih=rantingPelatihName(r);
   var h='<div class="card"><h3>'+esc(r.name)+'</h3>'
     +profilFotoHTML(r,true)
     +'<p class="muted" style="margin:10px 0 2px">'+esc(r.jenis)+' &bull; '+esc(r.tempat||'')+' &bull; Iuran '+rp(r.iuran)+'/bulan</p>'
@@ -2276,15 +2270,16 @@ function profilDetailHTML(r){
     +'<div class="stat"><b>'+aktif+'</b><span>Jumlah siswa aktif</span></div>'
     +'<div class="stat"><b style="font-size:16px;padding-top:4px">'+(next? esc(next.hari)+' • '+esc(next.jam)+(next.tempat?' • '+esc(next.tempat):''):'Belum ada jadwal')+'</b><span>Jadwal latihan berikutnya</span></div>'
     +'</div>'
+    /* Urutan sesuai permintaan: tentukan Bulan & Tahun DULU di atas,
+       baru tombol Unduh PDF / Excel di bawahnya. Tombol WhatsApp
+       Pelatih dan bagian Data Siswa sudah dihapus dari profil ini. */
+    +'<div class="dl-grid" style="margin-top:12px">'+dlPeriodSelects()+'</div>'
+    +'<p class="small muted">Tombol unduh di bawah memakai bulan &amp; tahun yang dipilih di atas — isinya data siswa, keaktifan, absensi, dan kas '+esc(r.name)+' saja.</p>'
     +'<div class="btnrow">'
-    +(wa? '<a class="btn gold" href="https://wa.me/'+esc(wa)+'" target="_blank" rel="noopener">WhatsApp Pelatih — Chat Langsung</a>' : '<span class="small muted">Nomor WA pelatih belum diisi.</span>')
-    +'<button class="btn" onclick="downloadRantingReport(\'pdf\','+r.num+')">Unduh PDF Ranting Ini</button>'
+    +'<button class="btn gold" onclick="downloadRantingReport(\'pdf\','+r.num+')">Unduh PDF Ranting Ini</button>'
     +'<button class="btn" onclick="downloadRantingReport(\'excel\','+r.num+')">Unduh Excel Ranting Ini</button>'
     +'</div>'
-    +'<div class="dl-grid" style="margin-top:10px">'+dlPeriodSelects()+'</div>'
-    +'<p class="small muted">Tombol unduh di atas memakai bulan &amp; tahun yang dipilih — isinya data siswa, keaktifan, absensi, dan kas '+esc(r.name)+' saja.</p>'
-    +'</div>'
-    +'<div class="card"><h3>Data Siswa — '+esc(r.name)+'</h3>'+profilSiswaListHTML(r)+'</div>';
+    +'</div>';
   return h;
 }
 function downloadRantingReport(fmt, num){
@@ -2298,13 +2293,20 @@ function viewProfilRanting(){
   if(role==='admin_ranting'){
     var r=rantingByNum(currentUser.rantingNum);
     if(!r) return h+'<div class="card"><h3>Ranting tidak ditemukan</h3></div>';
-    h+='<p class="muted" style="margin-top:0">Profil ranting kamu. Di bawah ini tampilannya seperti yang dilihat Operator &amp; Admin Utama — lengkap dengan total kas, keaktifan, jumlah siswa aktif, dan jadwal berikutnya. Kamu bisa mengedit foto, nama pelatih, dan nomor WA pelatih.</p>'
-      +profilDetailHTML(r)
-      +profilEditFormHTML(r);
+    /* Di bawah judul langsung tampil profilnya — tanpa tulisan kecil.
+       Form edit TIDAK langsung tampil: ada tombol Edit dulu, diklik
+       baru formnya keluar, supaya bagian profil tetap simpel. */
+    h+=profilDetailHTML(r);
+    if(profilEditOpen){
+      h+=profilEditFormHTML(r);
+    } else {
+      h+='<div class="card"><div class="btnrow" style="margin-top:0"><button class="btn gold" onclick="profilEditOpen=true;renderContent()">Edit Profil Ranting</button></div>'
+        +'<p class="small muted" style="margin:8px 0 0">Ubah foto, nama ranting / sekolah, jenis, iuran, tempat, dan catatan jadwal. Nama pelatih &amp; nomor WA pelatih diatur di menu Pengaturan.</p></div>';
+    }
     return h;
   }
   /* Operator & Admin Utama: daftar semua profil, klik untuk detail */
-  h+='<p class="muted" style="margin-top:0">Semua ranting / sekolah beserta total kas dan keaktifannya. <b>Klik satu ranting</b> untuk membuka tombol unduh dan data siswa lengkapnya di bawah.</p>';
+  h+='<p class="muted" style="margin-top:0">Semua ranting / sekolah beserta total kas dan keaktifannya. <b>Klik satu ranting</b> untuk membuka detail dan tombol unduhnya di bawah.</p>';
   if(profilRantingSelected){
     var sel=rantingByNum(profilRantingSelected);
     if(sel){
@@ -2317,25 +2319,22 @@ function viewProfilRanting(){
   return h;
 }
 function profilEditFormHTML(r){
-  var waVal=r.waPelatih? waNum(r.waPelatih) : '';
+  /* Nama pelatih & nomor WA pelatih TIDAK diedit di sini lagi —
+     sudah ada di menu Pengaturan (Data Diri Pribadi). Form ini hanya
+     mengedit foto, nama ranting, jenis, iuran, tempat, dan catatan. */
   return '<div class="card"><h3>Edit Profil Ranting</h3>'
-    +'<p class="small muted" style="margin-top:0">Khusus Admin Ranting ranting ini. Foto bebas (foto latihan, tempat latihan, atau kegiatan). Setelah memilih file, jendela crop terbuka — geser, perbesar, atau putar fotonya dulu, lalu hasil crop dikompres JPEG supaya ringan, tidak memenuhi penyimpanan.</p>'
+    +'<p class="small muted" style="margin-top:0">Khusus Admin Ranting ranting ini. Foto bebas (foto latihan, tempat latihan, atau kegiatan). Setelah memilih file, jendela crop terbuka — geser kotak crop dan ubah ukurannya dulu, hasil crop-nya foto 600&times;800 piksel (rasio 3:4) yang dikompres JPEG supaya ringan.</p>'
     +'<div id="profil-foto-preview">'+profilFotoHTML(r,true)+'</div>'
     +'<label class="f" for="pr-foto">Foto Profil Ranting</label>'
     +'<input type="file" id="pr-foto" accept="image/*" onchange="handleProfilFoto(this)" />'
     +'<p class="small muted" id="profil-foto-info">'+(r.foto?'Foto saat ini sudah terpasang. Pilih file baru untuk menggantinya, atau tekan Crop / Edit Foto untuk memotong ulang foto yang ada.':'Belum ada foto. Pilih file gambar untuk memasang foto profil ranting.')+'</p>'
     +'<div class="btnrow" style="margin-top:6px"><button class="btn small" onclick="openFotoCropper()">Crop / Edit Foto</button><button class="btn small danger" onclick="removeProfilFoto()">Hapus Foto</button></div>'
-    +'<label class="f" for="pr-pelatih">Nama Pelatih Ranting</label>'
-    +'<input type="text" id="pr-pelatih" value="'+esc(r.pelatih||'')+'" placeholder="Nama pelatih ranting ini" />'
-    +'<label class="f" for="pr-wa">Nomor WhatsApp Pelatih (format 62)</label>'
-    +'<input type="tel" id="pr-wa" value="'+esc(waVal)+'" placeholder="628xxxxxxxxxx" />'
-    +'<p class="small muted" style="margin:4px 0 0">Tulis dengan awalan <b>62</b> (contoh 6285816754962) — boleh juga diawali 08, akan diubah otomatis ke 62 saat disimpan, supaya tombol WhatsApp Pelatih langsung membuka chat.</p>'
     +'<label class="f" for="pr-name">Nama Ranting / Sekolah</label><input type="text" id="pr-name" value="'+esc(r.name)+'" />'
     +'<div class="grid2"><div><label class="f">Jenis</label><select id="pr-jenis"><option'+(r.jenis==='Ranting'?' selected':'')+'>Ranting</option><option'+(r.jenis==='Sekolah'?' selected':'')+'>Sekolah</option></select></div>'
     +'<div><label class="f">Iuran per Bulan (Rp)</label><input type="number" id="pr-iuran" value="'+r.iuran+'" min="0" /></div></div>'
     +'<label class="f" for="pr-tempat">Tempat / Lokasi</label><input type="text" id="pr-tempat" value="'+esc(r.tempat||'')+'" />'
     +'<label class="f" for="pr-note">Catatan Jadwal Umum</label><textarea id="pr-note">'+esc(r.note||'')+'</textarea>'
-    +'<div class="btnrow"><button class="btn gold" onclick="saveProfilRanting()">Simpan Profil Ranting</button></div></div>';
+    +'<div class="btnrow"><button class="btn gold" onclick="saveProfilRanting()">Simpan Profil Ranting</button><button class="btn" onclick="profilEditOpen=false;profilFotoDraft=\'\';profilFotoSource=\'\';renderContent()">Batal</button></div></div>';
 }
 function handleProfilFoto(input){
   var f=input.files&&input.files[0]; if(!f) return;
@@ -2346,7 +2345,8 @@ function handleProfilFoto(input){
     var img=new Image();
     img.onload=function(){
       /* Sumber crop diperkecil ke maksimal 1600 piksel sisi terpanjang
-         supaya ringan diolah di HP; hasil crop akhir 640x480 piksel. */
+         supaya ringan diolah di HP; hasil crop akhir selalu 600x800
+         piksel (rasio pas foto 3:4). */
       var MAXS=1600, w=img.naturalWidth||img.width, hgt=img.naturalHeight||img.height;
       var sc=Math.min(1, MAXS/Math.max(w,hgt));
       if(sc<1){
@@ -2365,74 +2365,134 @@ function handleProfilFoto(input){
   rd.readAsDataURL(f);
   input.value='';
 }
-/* ---------------- Crop / edit foto Profil Ranting ----------------
-   Editor crop bawaan (tanpa pustaka luar): geser dengan jari/mouse,
-   penggeser Perbesar untuk zoom, tombol Putar 90°. Kanvas pratinjau
-   640x480 — yang terlihat di bingkai persis yang disimpan. */
+/* ---------------- Crop foto: kotak crop beneran, rasio 3:4 ----------------
+   Editor crop bawaan (tanpa pustaka luar). Foto ditampilkan utuh di
+   panggung, lalu pengguna menggeser KOTAK CROP di atasnya dan mengubah
+   UKURAN kotak itu (seret pegangan pojok kanan bawah, atau penggeser
+   Ukuran Kotak) — bukan sekadar zoom seperti sebelumnya. Rasio kotak
+   dikunci 3:4 (pas foto) dan hasil crop selalu dirender ke ukuran
+   pasti 600x800 piksel, ukuran yang pas untuk foto KTA dan foto
+   profil akun. Dipakai untuk foto Profil Ranting dan foto siswa di
+   Pengaturan (cropTarget membedakan sasarannya). */
 var cropState=null;
 var cropTarget='ranting'; /* 'ranting' = foto Profil Ranting, 'siswa' = foto siswa di Pengaturan */
+var CROP_OUT_W=600, CROP_OUT_H=800; /* ukuran hasil crop: pas foto 3:4 */
 function openFotoCropper(){
   cropTarget='ranting';
-  var ct=document.getElementById('crop-title'); if(ct) ct.textContent='Crop / Edit Foto Profil Ranting';
+  var ct=document.getElementById('crop-title'); if(ct) ct.textContent='Crop Foto Profil Ranting';
   var r=rantingByNum(currentUser.rantingNum);
   var src=profilFotoSource || (profilFotoDraft && profilFotoDraft!=='__REMOVE__' ? profilFotoDraft : '') || (r? (r.foto||'') : '');
   if(!src){ toast('Pilih foto dulu lewat pilihan file di atas, baru bisa di-crop.'); return; }
   var img=new Image();
   img.onload=function(){
-    cropState={ img:img, rot:0, zoom:1, ox:0, oy:0, drag:null };
-    var z=document.getElementById('crop-zoom'); if(z) z.value=100;
+    cropState={ img:img, drag:null, box:null };
     document.getElementById('crop-modal').classList.remove('hidden');
+    cropInitBox();
     cropDraw();
   };
   img.onerror=function(){ toast('Foto tidak bisa dibuka untuk di-crop. Coba file gambar lain.'); };
   img.src=src;
 }
-function cropGeom(){
-  var cv=document.getElementById('crop-canvas');
-  var st=cropState, iw=st.img.naturalWidth||st.img.width, ih=st.img.naturalHeight||st.img.height;
-  var swap=(st.rot%180!==0);
-  var rw=swap? ih:iw, rh=swap? iw:ih;
-  var base=Math.max(cv.width/rw, cv.height/rh);
-  return { cv:cv, iw:iw, ih:ih, rw:rw, rh:rh, scale:base*st.zoom };
+/* Peta gambar -> panggung: gambar ditampilkan utuh (contain) di
+   tengah kanvas; cropState.box adalah kotak crop dalam koordinat
+   kanvas, selalu di dalam area gambar dan selalu berasio 3:4. */
+function cropFit(){
+  var cv=document.getElementById('crop-canvas'), st=cropState;
+  var iw=st.img.naturalWidth||st.img.width, ih=st.img.naturalHeight||st.img.height;
+  var scale=Math.min(cv.width/iw, cv.height/ih);
+  var w=iw*scale, h=ih*scale;
+  return { cv:cv, iw:iw, ih:ih, scale:scale, x:(cv.width-w)/2, y:(cv.height-h)/2, w:w, h:h };
+}
+function cropInitBox(){
+  var f=cropFit(), st=cropState;
+  var bw=Math.min(f.w, f.h*3/4)*0.85, bh=bw*4/3;
+  if(bh>f.h){ bh=f.h*0.85; bw=bh*3/4; }
+  st.box={ x:f.x+(f.w-bw)/2, y:f.y+(f.h-bh)/2, w:bw, h:bh };
+  cropSyncSizeSlider();
+}
+function cropSyncSizeSlider(){
+  var s=document.getElementById('crop-size'); if(!s||!cropState||!cropState.box) return;
+  var f=cropFit(), maxW=Math.min(f.w, f.h*3/4);
+  if(maxW>0) s.value=Math.max(30, Math.min(100, Math.round(cropState.box.w/maxW*100)));
+}
+function cropClampBox(){
+  var f=cropFit(), b=cropState.box;
+  var maxW=Math.min(f.w, f.h*3/4);
+  b.w=Math.max(48, Math.min(maxW, b.w)); b.h=b.w*4/3;
+  b.x=Math.max(f.x, Math.min(f.x+f.w-b.w, b.x));
+  b.y=Math.max(f.y, Math.min(f.y+f.h-b.h, b.y));
 }
 function cropDraw(){
-  if(!cropState) return;
-  var g=cropGeom(), ctx=g.cv.getContext('2d');
-  var maxOx=Math.max(0,(g.rw*g.scale-g.cv.width)/2), maxOy=Math.max(0,(g.rh*g.scale-g.cv.height)/2);
-  cropState.ox=Math.max(-maxOx, Math.min(maxOx, cropState.ox));
-  cropState.oy=Math.max(-maxOy, Math.min(maxOy, cropState.oy));
-  ctx.fillStyle='#0d0a04'; ctx.fillRect(0,0,g.cv.width,g.cv.height);
-  ctx.save();
-  ctx.translate(g.cv.width/2+cropState.ox, g.cv.height/2+cropState.oy);
-  ctx.rotate(cropState.rot*Math.PI/180);
-  ctx.scale(g.scale, g.scale);
-  ctx.drawImage(cropState.img, -g.iw/2, -g.ih/2);
-  ctx.restore();
+  if(!cropState||!cropState.box) return;
+  cropClampBox();
+  var f=cropFit(), ctx=f.cv.getContext('2d'), b=cropState.box;
+  ctx.fillStyle='#0d0a04'; ctx.fillRect(0,0,f.cv.width,f.cv.height);
+  ctx.drawImage(cropState.img, f.x, f.y, f.w, f.h);
+  /* Gelapkan area foto di luar kotak crop. */
+  ctx.fillStyle='rgba(0,0,0,.62)';
+  ctx.fillRect(f.x, f.y, f.w, Math.max(0,b.y-f.y));
+  ctx.fillRect(f.x, b.y+b.h, f.w, Math.max(0,f.y+f.h-(b.y+b.h)));
+  ctx.fillRect(f.x, b.y, Math.max(0,b.x-f.x), b.h);
+  ctx.fillRect(b.x+b.w, b.y, Math.max(0,f.x+f.w-(b.x+b.w)), b.h);
+  /* Garis bantu sepertiga di dalam kotak. */
+  ctx.strokeStyle='rgba(247,239,219,.35)'; ctx.lineWidth=1;
+  for(var i=1;i<3;i++){
+    ctx.beginPath(); ctx.moveTo(b.x+b.w*i/3, b.y); ctx.lineTo(b.x+b.w*i/3, b.y+b.h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(b.x, b.y+b.h*i/3); ctx.lineTo(b.x+b.w, b.y+b.h*i/3); ctx.stroke();
+  }
+  /* Bingkai kotak crop + pegangan ubah ukuran di pojok kanan bawah. */
+  ctx.strokeStyle='#d9a92c'; ctx.lineWidth=2.5; ctx.strokeRect(b.x, b.y, b.w, b.h);
+  ctx.fillStyle='#d9a92c';
+  ctx.beginPath(); ctx.arc(b.x+b.w, b.y+b.h, 12, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#171106'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(b.x+b.w-5, b.y+b.h+5); ctx.lineTo(b.x+b.w+5, b.y+b.h-5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(b.x+b.w+5, b.y+b.h-5); ctx.lineTo(b.x+b.w+0.5, b.y+b.h-5); ctx.moveTo(b.x+b.w+5, b.y+b.h-5); ctx.lineTo(b.x+b.w+5, b.y+b.h-0.5); ctx.stroke();
 }
-function cropRotate(){ if(!cropState) return; cropState.rot=(cropState.rot+90)%360; cropState.ox=0; cropState.oy=0; cropDraw(); }
-function cropReset(){
-  if(!cropState) return;
-  cropState.rot=0; cropState.zoom=1; cropState.ox=0; cropState.oy=0;
-  var z=document.getElementById('crop-zoom'); if(z) z.value=100;
+function cropSetSize(v){
+  if(!cropState||!cropState.box) return;
+  var f=cropFit(), b=cropState.box;
+  var maxW=Math.min(f.w, f.h*3/4);
+  var nw=Math.max(48, Math.min(maxW, maxW*(v||80)/100));
+  var cx=b.x+b.w/2, cy=b.y+b.h/2;
+  b.w=nw; b.h=nw*4/3; b.x=cx-b.w/2; b.y=cy-b.h/2;
   cropDraw();
 }
-function cropSetZoom(v){ if(!cropState) return; cropState.zoom=Math.max(1, Math.min(3, (v||100)/100)); cropDraw(); }
+function cropRotate(){
+  if(!cropState) return;
+  /* Putar bitmap sumbernya sendiri 90°, lalu kotak crop dibuat ulang
+     di atas gambar yang sudah tegak — hitungan crop tetap sederhana. */
+  var img=cropState.img, iw=img.naturalWidth||img.width, ih=img.naturalHeight||img.height;
+  var cv=document.createElement('canvas'); cv.width=ih; cv.height=iw;
+  var ctx=cv.getContext('2d'); ctx.translate(ih/2, iw/2); ctx.rotate(Math.PI/2); ctx.drawImage(img, -iw/2, -ih/2);
+  cropState.img=cv; cropState.drag=null;
+  cropInitBox(); cropDraw();
+}
+function cropReset(){
+  if(!cropState) return;
+  cropState.drag=null;
+  cropInitBox(); cropDraw();
+}
 function closeFotoCropper(){
   var m=document.getElementById('crop-modal'); if(m) m.classList.add('hidden');
   cropState=null;
 }
 function cropApply(){
-  if(!cropState) return;
-  cropDraw();
-  var cv=document.getElementById('crop-canvas');
-  var hasil=cv.toDataURL('image/jpeg',0.82);
+  if(!cropState||!cropState.box) return;
+  cropClampBox();
+  var f=cropFit(), b=cropState.box;
+  /* Petakan kotak crop (koordinat kanvas) kembali ke piksel sumber,
+     lalu render ke ukuran hasil yang pasti: 600x800 (3:4). */
+  var sx=(b.x-f.x)/f.scale, sy=(b.y-f.y)/f.scale, sw=b.w/f.scale, sh=b.h/f.scale;
+  var out=document.createElement('canvas'); out.width=CROP_OUT_W; out.height=CROP_OUT_H;
+  out.getContext('2d').drawImage(cropState.img, sx, sy, sw, sh, 0, 0, CROP_OUT_W, CROP_OUT_H);
+  var hasil=out.toDataURL('image/jpeg',0.85);
   if(cropTarget==='siswa'){
     siswaFotoDraft=hasil;
     siswaFotoSource='';
     var prevS=document.getElementById('siswa-foto-preview');
     if(prevS) prevS.innerHTML='<img class="profil-photo-sm" src="'+siswaFotoDraft+'" alt="Pratinjau foto saya baru" />';
     var infoS=document.getElementById('siswa-foto-info');
-    if(infoS) infoS.textContent='Foto hasil crop siap disimpan ('+cv.width+'×'+cv.height+' piksel). Tekan Simpan Data Diri untuk memasangnya di KTA kamu.';
+    if(infoS) infoS.textContent='Foto hasil crop siap disimpan ('+CROP_OUT_W+'×'+CROP_OUT_H+' piksel, rasio 3:4). Tekan Simpan Data Diri untuk memasangnya di KTA kamu.';
     closeFotoCropper();
     toast('Hasil crop dipakai sebagai foto baru. Tekan Simpan Data Diri untuk menyimpannya.');
     return;
@@ -2442,16 +2502,41 @@ function cropApply(){
   var prev=document.getElementById('profil-foto-preview');
   if(prev) prev.innerHTML='<img class="profil-photo-sm" src="'+profilFotoDraft+'" alt="Pratinjau foto profil ranting baru" />';
   var info=document.getElementById('profil-foto-info');
-  if(info) info.textContent='Foto hasil crop siap disimpan ('+cv.width+'×'+cv.height+' piksel). Tekan Simpan Profil Ranting untuk memasangnya.';
+  if(info) info.textContent='Foto hasil crop siap disimpan ('+CROP_OUT_W+'×'+CROP_OUT_H+' piksel, rasio 3:4). Tekan Simpan Profil Ranting untuk memasangnya.';
   closeFotoCropper();
   toast('Hasil crop dipakai sebagai foto baru. Tekan Simpan Profil Ranting untuk menyimpannya.');
 }
 (function initCropDrag(){
   var cv=document.getElementById('crop-canvas'); if(!cv) return;
   function pos(e){ var r=cv.getBoundingClientRect(); return { x:(e.clientX-r.left)*cv.width/r.width, y:(e.clientY-r.top)*cv.height/r.height }; }
-  cv.addEventListener('pointerdown', function(e){ if(!cropState) return; cropState.drag=pos(e); try{ cv.setPointerCapture(e.pointerId); }catch(err){} });
-  cv.addEventListener('pointermove', function(e){ if(!cropState||!cropState.drag) return; var p=pos(e); cropState.ox+=p.x-cropState.drag.x; cropState.oy+=p.y-cropState.drag.y; cropState.drag=p; cropDraw(); });
-  function endDrag(){ if(cropState) cropState.drag=null; }
+  cv.addEventListener('pointerdown', function(e){
+    if(!cropState||!cropState.box) return;
+    var p=pos(e), b=cropState.box;
+    if(Math.abs(p.x-(b.x+b.w))<=28 && Math.abs(p.y-(b.y+b.h))<=28){
+      cropState.drag={ mode:'resize' };
+    } else if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h){
+      cropState.drag={ mode:'move', dx:p.x-b.x, dy:p.y-b.y };
+    } else {
+      /* Sentuh di luar kotak: kotak melompat ke titik itu lalu ikut digeser. */
+      b.x=p.x-b.w/2; b.y=p.y-b.h/2;
+      cropState.drag={ mode:'move', dx:b.w/2, dy:b.h/2 };
+    }
+    try{ cv.setPointerCapture(e.pointerId); }catch(err){}
+    cropDraw();
+  });
+  cv.addEventListener('pointermove', function(e){
+    if(!cropState||!cropState.drag||!cropState.box) return;
+    var p=pos(e), b=cropState.box;
+    if(cropState.drag.mode==='resize'){
+      /* Rasio dikunci 3:4 — ukuran mengikuti sumbu yang lebih jauh. */
+      b.w=Math.max(48, Math.max(p.x-b.x, (p.y-b.y)*3/4));
+      b.h=b.w*4/3;
+    } else {
+      b.x=p.x-cropState.drag.dx; b.y=p.y-cropState.drag.dy;
+    }
+    cropDraw();
+  });
+  function endDrag(){ if(cropState){ cropState.drag=null; cropSyncSizeSlider(); } }
   cv.addEventListener('pointerup', endDrag);
   cv.addEventListener('pointercancel', endDrag);
 })();
@@ -2468,7 +2553,8 @@ function removeProfilFoto(){
 /* ---------------- Foto siswa di Pengaturan (untuk KTA) ----------------
    Siswa baru biasanya belum punya foto, jadi ia memasukkan fotonya
    sendiri di Pengaturan. Editor crop-nya SAMA dengan editor crop
-   Profil Ranting (geser, zoom, putar), hanya sasarannya berbeda. */
+   Profil Ranting (kotak crop 3:4 yang bisa digeser & diubah
+   ukurannya, hasil 600x800 piksel), hanya sasarannya berbeda. */
 function handleSiswaFoto(input){
   var f=input.files&&input.files[0]; if(!f) return;
   var info=document.getElementById('siswa-foto-info');
@@ -2502,10 +2588,10 @@ function openSiswaCropper(){
   var img=new Image();
   img.onload=function(){
     cropTarget='siswa';
-    var ct=document.getElementById('crop-title'); if(ct) ct.textContent='Crop / Edit Foto Saya';
-    cropState={ img:img, rot:0, zoom:1, ox:0, oy:0, drag:null };
-    var z=document.getElementById('crop-zoom'); if(z) z.value=100;
+    var ct=document.getElementById('crop-title'); if(ct) ct.textContent='Crop Foto Saya';
+    cropState={ img:img, drag:null, box:null };
     document.getElementById('crop-modal').classList.remove('hidden');
+    cropInitBox();
     cropDraw();
   };
   img.onerror=function(){ toast('Foto tidak bisa dibuka untuk di-crop. Coba file gambar lain.'); };
@@ -2522,37 +2608,40 @@ function removeSiswaFoto(){
 }
 function saveProfilRanting(){
   var r=rantingByNum(currentUser.rantingNum); if(!r) return;
-  var waRaw=document.getElementById('pr-wa').value.trim();
-  var waFixed=waRaw? waNum(waRaw) : '';
-  if(waRaw && (!/^62\d{8,14}$/.test(waFixed))){ toast('Nomor WA pelatih belum benar. Pakai format 62, contoh 6285816754962.'); return; }
+  /* Nama pelatih & nomor WA pelatih tidak lagi diedit di form ini
+     (sudah ada di Pengaturan), jadi kolom pelatih / wa_pelatih tidak
+     dibaca dan tidak dikirim dari sini sama sekali. */
   var fotoChanged=!!profilFotoDraft; /* ada foto baru hasil crop, atau foto dihapus */
-  if(profilFotoDraft==='__REMOVE__') r.foto='';
-  else if(profilFotoDraft) r.foto=profilFotoDraft;
+  var newFoto = profilFotoDraft==='__REMOVE__' ? '' : (profilFotoDraft || r.foto);
+  var vals={
+    name: document.getElementById('pr-name').value.trim()||r.name,
+    jenis: document.getElementById('pr-jenis').value,
+    iuran: parseInt(document.getElementById('pr-iuran').value,10)||r.iuran,
+    tempat: document.getElementById('pr-tempat').value.trim(),
+    note: document.getElementById('pr-note').value.trim()
+  };
   profilFotoDraft='';
   profilFotoSource='';
-  r.pelatih=document.getElementById('pr-pelatih').value.trim();
-  if(r.pelatih) currentUser.name=r.pelatih; /* nama akun ranting = nama pelatihnya, supaya header beranda ikut berubah */
-  r.waPelatih=waFixed;
-  r.name=document.getElementById('pr-name').value.trim()||r.name;
-  r.jenis=document.getElementById('pr-jenis').value;
-  r.iuran=parseInt(document.getElementById('pr-iuran').value,10)||r.iuran;
-  r.tempat=document.getElementById('pr-tempat').value.trim();
-  r.note=document.getElementById('pr-note').value.trim();
-  /* PERBAIKAN UTAMA (keluhan pengguna): tombol ini dulu mengirim
-     SATU baris lengkap 11 kolom (termasuk foto kosong) setiap kali
-     simpan — satu kolom yang belum ada di tabel ranting Supabase
-     (foto) membuat seluruh UPDATE dan INSERT cadangan ditolak, jadi
-     edit nama saja pun tidak pernah tersimpan. Sekarang yang dikirim
-     HANYA kolom yang diedit di form ini, dan kolom foto HANYA ikut
-     bila ada foto baru yang dipilih atau foto memang dihapus. Baris
-     lengkap hanya dipakai sebagai sisipan cadangan bila baris
-     ranting ini belum ada sama sekali di server. Hasil simpan tetap
-     dilaporkan apa adanya lewat sbToastResult. */
-  var patch={ name:r.name, jenis:r.jenis, iuran:r.iuran, tempat:r.tempat, note:r.note, pelatih:r.pelatih, wa_pelatih:r.waPelatih };
-  if(fotoChanged) patch.foto=r.foto;
-  var p=sbSync('ranting', patch, { num:r.num }, rantingRow(r));
+  /* Simpan HANYA mengirim kolom yang benar-benar berubah, dan kolom
+     foto HANYA ikut bila ada foto baru hasil crop atau foto memang
+     dihapus — supaya simpan tidak gagal hanya karena satu kolom
+     (mis. foto) belum ada di tabel ranting di server. Baris lengkap
+     hanya dipakai sebagai sisipan cadangan bila baris ranting ini
+     belum ada sama sekali di server. */
+  var patch={};
+  if(vals.name!==r.name) patch.name=vals.name;
+  if(vals.jenis!==r.jenis) patch.jenis=vals.jenis;
+  if(vals.iuran!==r.iuran) patch.iuran=vals.iuran;
+  if(vals.tempat!==(r.tempat||'')) patch.tempat=vals.tempat;
+  if(vals.note!==(r.note||'')) patch.note=vals.note;
+  if(fotoChanged) patch.foto=newFoto;
+  r.name=vals.name; r.jenis=vals.jenis; r.iuran=vals.iuran; r.tempat=vals.tempat; r.note=vals.note;
+  if(fotoChanged) r.foto=newFoto;
+  profilEditOpen=false;
   enterApp(); goMenu('profil');
-  sbToastResult(p, 'Profil Ranting tersimpan'+(waFixed?(' — WA pelatih: '+waFixed):'')+'.');
+  if(!Object.keys(patch).length){ toast('Tidak ada perubahan pada Profil Ranting.'); return; }
+  var p=sbSync('ranting', patch, { num:r.num }, rantingRow(r));
+  sbToastResult(p, 'Profil Ranting tersimpan.');
 }
 
 /* ---------------- Edit Ranting (Admin Ranting) ---------------- */
@@ -2744,7 +2833,7 @@ function personalDataHTML(){
     if(!s) return '<div class="card"><h3>Data Diri Pribadi</h3><p class="muted" style="margin-top:0">Akun ini belum terhubung ke data siswa, jadi data diri belum bisa diedit di sini. Hubungi Admin Ranting.</p></div>';
     var r=rantingByNum(s.rantingNum);
     return '<div class="card"><h3>Data Diri Pribadi</h3>'
-      +'<p class="small muted" style="margin-top:0">Data ini yang tampil di KTA (kartu anggota) kamu. Isi dengan benar — terutama foto, karena saat baru daftar biasanya belum ada foto. Foto bisa di-crop dulu sebelum disimpan.</p>'
+      +'<p class="small muted" style="margin-top:0">Data ini yang tampil di KTA (kartu anggota) kamu. Isi dengan benar — terutama foto, karena saat baru daftar biasanya belum ada foto. Foto di-crop dulu dengan kotak crop rasio 3:4 (hasil 600&times;800 piksel, pas untuk KTA) sebelum disimpan.</p>'
       +'<div id="siswa-foto-preview">'+siswaFotoPreviewHTML(s)+'</div>'
       +'<label class="f" for="pd-foto">Foto Saya (untuk KTA)</label>'
       +'<input type="file" id="pd-foto" accept="image/*" onchange="handleSiswaFoto(this)" />'
