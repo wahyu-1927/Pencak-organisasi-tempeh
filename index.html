@@ -627,6 +627,26 @@ function sbUpdateOnly(table, row, match){
   }
   return attempt(row, 0);
 }
+/* Simpan ranting yang barisnya SUDAH ADA di server: UPDATE saja,
+   TIDAK PERNAH INSERT. sbSync tidak dipakai di sini karena ia
+   beralih ke INSERT bila UPDATE tidak mengembalikan baris (mis.
+   balasan update kosong) — INSERT itu selalu menabrak unique
+   constraint ranting_number_key karena kolom number baris yang
+   sama sudah terdaftar, persis error "duplicate key value violates
+   unique constraint ranting_number_key" yang dilaporkan.
+   Pencocokan utama pada kolom num; bila baris tidak ketemu lewat
+   num, dicoba sekali lagi dicocokkan pada kolom number (kunci
+   uniknya). Bila tetap tidak ketemu, hasilnya error jujur
+   "Baris tidak ditemukan di server" — bukan INSERT diam-diam. */
+function sbUpdateRanting(patch, num){
+  return sbUpdateOnly('ranting', patch, { num:num }).then(function(res){
+    if(res.ok) return res;
+    if(res.error==='Baris tidak ditemukan di server'){
+      return sbUpdateOnly('ranting', patch, { number:num });
+    }
+    return res;
+  });
+}
 function sbDelete(table, match){
   if(!sb) return Promise.resolve({ ok:false, error:'Pustaka Supabase tidak termuat' });
   sbMarkDirty(table, null);
@@ -653,11 +673,12 @@ function sbToastResult(promise, okMsg){
     else toast('Data tampil tersimpan di sesi ini, TAPI GAGAL tersimpan ke server'+(res&&res.error? ' — '+res.error : '')+'. Data bisa hilang saat aplikasi ditutup atau dimuat ulang. Periksa koneksi internet, lalu tekan Simpan sekali lagi.');
   });
 }
-/* Baris LENGKAP untuk sisipan baris BARU (ranting & students) dan
-   untuk data siswa — semua kolom yang dibaca loadFromSupabase ikut
-   terkirim. Untuk EDIT ranting yang sudah ada, form mengirim patch
-   sebagian saja (hanya kolom yang diedit), lihat saveProfilRanting,
-   saveEditRanting, dan saveQris. */
+/* Baris LENGKAP untuk sisipan baris BARU (ranting baru & students)
+   dan untuk data siswa — semua kolom yang dibaca loadFromSupabase
+   ikut terkirim. Untuk EDIT ranting yang sudah ada, form mengirim
+   patch sebagian saja (hanya kolom yang diedit) dan menyimpannya
+   dengan sbUpdateRanting (UPDATE saja, tanpa INSERT), lihat
+   saveProfilRanting, saveEditRanting, dan saveQris. */
 function rantingRow(r){
   return { num:r.num, number:r.num, roman:r.roman||ROMAN[r.num-1]||String(r.num), name:r.name, jenis:r.jenis||'Ranting', iuran:r.iuran||0, tempat:r.tempat||'', qris:r.qris||'', note:r.note||'', foto:r.foto||'', pelatih:r.pelatih||'', wa_pelatih:r.waPelatih||'' };
 }
@@ -1698,9 +1719,9 @@ function saveQris(n){
   r.qris=document.getElementById('qris-text-'+n).value.trim();
   /* Hanya kolom qris yang dikirim — kolom lain (termasuk foto) tidak
      ikut, supaya satu kolom yang belum ada di tabel ranting tidak
-     menggagalkan simpan QRIS. Baris lengkap hanya dipakai bila baris
-     rantingnya belum ada di server dan harus dibuat baru. */
-  var p=sbSync('ranting', { qris:r.qris, number:r.num }, { num:n }, rantingRow(r));
+     menggagalkan simpan QRIS. Baris ranting ini sudah ada di server,
+     jadi simpan memakai UPDATE saja (sbUpdateRanting), bukan INSERT. */
+  var p=sbUpdateRanting({ qris:r.qris, number:r.num }, n);
   renderContent(); sbToastResult(p, 'QRIS '+r.name+' tersimpan.');
 }
 function addKasEntry(){
@@ -2625,9 +2646,10 @@ function saveProfilRanting(){
   /* Simpan HANYA mengirim kolom yang benar-benar berubah, dan kolom
      foto HANYA ikut bila ada foto baru hasil crop atau foto memang
      dihapus — supaya simpan tidak gagal hanya karena satu kolom
-     (mis. foto) belum ada di tabel ranting di server. Baris lengkap
-     hanya dipakai sebagai sisipan cadangan bila baris ranting ini
-     belum ada sama sekali di server. */
+     (mis. foto) belum ada di tabel ranting di server. Baris ranting
+     ini sudah ada di server, jadi simpan memakai UPDATE pada baris
+     itu (sbUpdateRanting) — INSERT baru akan selalu bentrok dengan
+     unique constraint pada kolom number. */
   var patch={};
   if(vals.name!==r.name) patch.name=vals.name;
   if(vals.jenis!==r.jenis) patch.jenis=vals.jenis;
@@ -2641,7 +2663,7 @@ function saveProfilRanting(){
   enterApp(); goMenu('profil');
   if(!Object.keys(patch).length){ toast('Tidak ada perubahan pada Profil Ranting.'); return; }
   patch.number=r.num;
-  var p=sbSync('ranting', patch, { num:r.num }, rantingRow(r));
+  var p=sbUpdateRanting(patch, r.num);
   sbToastResult(p, 'Profil Ranting tersimpan.');
 }
 
@@ -2678,7 +2700,7 @@ function saveEditRanting(){
      form ini (tanpa foto & QRIS), supaya satu kolom yang belum ada
      di tabel ranting tidak menggagalkan seluruh simpan. */
   var patch={ name:r.name, number:r.num, jenis:r.jenis, iuran:r.iuran, tempat:r.tempat, pelatih:r.pelatih, wa_pelatih:r.waPelatih, note:r.note };
-  var p=sbSync('ranting', patch, { num:r.num }, rantingRow(r));
+  var p=sbUpdateRanting(patch, r.num);
   enterApp();
   sbToastResult(p, 'Profil ranting tersimpan.');
 }
@@ -2929,7 +2951,7 @@ function savePersonalDiri(){
       var patch={};
       if(r.pelatih!==nama) patch.pelatih=nama;
       if((r.waPelatih||'')!==waFixed) patch.wa_pelatih=waFixed;
-      if(Object.keys(patch).length){ patch.number=r.num; r.pelatih=nama; r.waPelatih=waFixed; jobs.push(sbSync('ranting', patch, { num:r.num }, rantingRow(r))); }
+      if(Object.keys(patch).length){ patch.number=r.num; r.pelatih=nama; r.waPelatih=waFixed; jobs.push(sbUpdateRanting(patch, r.num)); }
     }
   }
   if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbSync('accounts', { name:nama }, { email:currentUser.email }, { email:currentUser.email, role:currentUser.role, name:nama, ranting_num:currentUser.rantingNum })); }
