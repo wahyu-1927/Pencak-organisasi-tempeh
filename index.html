@@ -460,7 +460,7 @@ DB.accounts = [
   { email:'tirtayana1927@gmail.com', pass:'demo123', role:'admin_utama', label:'Pelatih Pusat', name:'Tirtayana', rantingNum:null, studentKta:null, active:true },
   { email:'Ranting1@gmail.com', pass:'demo123', role:'admin_ranting', label:'Admin Ranting I', name:'Admin Ranting I', rantingNum:1, studentKta:null, active:true },
   { email:'Siswa1@gmail.com', pass:'demo123', role:'siswa', label:'Siswa', name:'Siswa Contoh 1', rantingNum:1, studentKta:'PO-R-I-001', active:true },
-  { email:'Alumni1@gmail.com', pass:'demo123', role:'alumni', label:'Alumni Ranting I', name:'Alumni Contoh 1', rantingNum:1, studentKta:null, active:true },
+  { email:'Alumni1@gmail.com', pass:'demo123', role:'alumni', label:'Alumni Ranting I', name:'Alumni Contoh 1', rantingNum:1, studentKta:null, active:true, alamat:'', wa:'', foto:'' },
   { email:'Operator@gmail.com', pass:'demo123', role:'operator', label:'Operator', name:'Operator', rantingNum:null, studentKta:null, active:true }
 ];
 DB.students = [
@@ -775,6 +775,56 @@ function saveStudentToServer(s){
     }).catch(fail);
   }).catch(fail);
 }
+/* ---------------- Simpan alumni ke server (tabel accounts) ----------------
+   PENYEBAB Simpan Data Diri alumni hilang setelah muat ulang:
+   tabel accounts di Supabase KOSONG — akun alumni contoh hanya
+   hidup di aplikasi, jadi UPDATE tidak punya baris untuk diubah
+   (dan jalur lama memang melewatinya diam-diam). Jalur khusus ini
+   TIDAK memakai sbSync dan TIDAK membuang kolom apa pun: ia
+   memeriksa baris accounts lewat email lebih dulu. Ada -> UPDATE
+   baris itu. Belum ada -> INSERT baris LENGKAP memakai nama kolom
+   skema asli server (email, role, display_name, ranting_id,
+   alamat, wa, foto) dengan password_hash diisi nilai pengganti
+   yang TIDAK KOSONG (kolom itu NOT NULL di server; tanpa isian,
+   INSERT selalu ditolak). password_hash TIDAK PERNAH ikut di
+   UPDATE, supaya hash baris yang sudah ada tidak tertimpa nilai
+   pengganti. Hasil selalu {ok:true} atau {ok:false, error} —
+   kegagalan dikembalikan apa adanya, tidak ditelan. */
+function saveAlumniToServer(acc){
+  if(!sb) return Promise.resolve({ ok:false, error:'Pustaka Supabase tidak termuat' });
+  if(!acc || !acc.email) return Promise.resolve({ ok:false, error:'Email akun alumni tidak ada' });
+  sbMarkDirty('accounts', acc.email);
+  var patch={
+    /* Nilai role untuk peran Alumni di server adalah 'alumni'
+       (huruf kecil) — terbukti dari jawaban server sendiri:
+       nilai 'Alumni' ditolak check constraint accounts_role_check,
+       nilai 'alumni' diterima. */
+    role:'alumni',
+    display_name: acc.name||'',
+    alamat: acc.alamat||'',
+    wa: acc.wa||'',
+    foto: acc.foto||''
+  };
+  if(acc.rantingNum!==null && acc.rantingNum!==undefined) patch.ranting_id=acc.rantingNum;
+  function fail(e){ return { ok:false, error:String((e&&(e.message||e.details))||e||'Simpan ke server gagal') }; }
+  return sbTimeout(sb.from('accounts').select('email').eq('email', acc.email), 9000).then(function(res){
+    if(res && res.error) return { ok:false, error:(res.error.message||'Gagal memeriksa baris akun di server') };
+    var exists=!!(res && res.data && res.data.length);
+    if(exists){
+      return sbTimeout(sb.from('accounts').update(patch).eq('email', acc.email).select(), 9000).then(function(u){
+        if(u && u.error) return { ok:false, error:(u.error.message||'Ubah data alumni di server gagal') };
+        if(u && u.data && u.data.length) return { ok:true, updated:true };
+        return { ok:false, error:'Baris akun tidak ditemukan di server saat menyimpan' };
+      }).catch(fail);
+    }
+    var row={ email:acc.email, password_hash:'pengganti-belum-ada-sandi-server' };
+    Object.keys(patch).forEach(function(k){ row[k]=patch[k]; });
+    return sbTimeout(sb.from('accounts').insert(row).select(), 9000).then(function(ins){
+      if(ins && ins.error) return { ok:false, error:(ins.error.message||'Buat baris akun alumni di server gagal') };
+      return { ok:true, created:true };
+    }).catch(fail);
+  }).catch(fail);
+}
 /* ---------------- Pustaka berat: muat malas (lazy) ----------------
    Barcode, QR, dan PDF hanya dibutuhkan setelah masuk. Memuatnya di
    latar setelah login membuat halaman awal ringan dan tombol selalu
@@ -864,14 +914,27 @@ function loadFromSupabase(){
     if(!rows || !rows.length) return;
     rows.forEach(function(a){
       if(!a.email || sbIsDirty('accounts', a.email)) return;
+      /* Tabel accounts di server memakai nama kolom skema aslinya:
+         display_name (bukan name) dan ranting_id (bukan ranting_num),
+         plus alamat, wa, foto untuk data diri alumni. Petakan semua
+         itu ke nama aplikasi, dengan nama lama sebagai cadangan,
+         supaya data diri alumni yang tersimpan di server benar-benar
+         tampil lagi setelah muat ulang. Nilai role di server bisa
+         tertulis "Alumni" — samakan ke bentuk aplikasi 'alumni'. */
+      var roleSrv=a.role? String(a.role).toLowerCase().replace(/\s+/g,'_') : '';
+      var namaSrv=a.display_name||a.name||'';
+      var rantingSrv=(a.ranting_id!==undefined && a.ranting_id!==null)? a.ranting_id : ((a.ranting_num===undefined)? null : a.ranting_num);
       var old=findAccount(a.email);
       if(old){
-        if(a.role) old.role=a.role;
-        if(a.name) old.name=a.name;
-        if(a.ranting_num!==undefined && a.ranting_num!==null) old.rantingNum=a.ranting_num;
+        if(roleSrv) old.role=roleSrv;
+        if(namaSrv) old.name=namaSrv;
+        if(rantingSrv!==null && rantingSrv!==undefined) old.rantingNum=rantingSrv;
         if(a.label) old.label=a.label;
+        if(a.alamat!==undefined) old.alamat=a.alamat||'';
+        if(a.wa!==undefined) old.wa=a.wa||'';
+        if(a.foto!==undefined) old.foto=a.foto||'';
       } else {
-        DB.accounts.push({ email:a.email, pass:'', role:a.role||'siswa', label:a.label||'', name:a.name||a.email, rantingNum:(a.ranting_num===undefined?null:a.ranting_num), studentKta:a.student_kta||null, active:true });
+        DB.accounts.push({ email:a.email, pass:'', role:roleSrv||'siswa', label:a.label||'', name:namaSrv||a.email, rantingNum:rantingSrv, studentKta:a.student_kta||null, active:true, alamat:a.alamat||'', wa:a.wa||'', foto:a.foto||'' });
       }
     });
   }));
@@ -944,6 +1007,9 @@ var profilEditOpen = false; /* form Edit Profil Ranting tampil hanya setelah tom
 var siswaFotoDraft = ''; /* foto siswa hasil crop di Pengaturan, menunggu disimpan */
 var siswaFotoSource = ''; /* sumber foto siswa terakhir yang dipilih (data URL), untuk di-crop ulang */
 var siswaSaveNotice = ''; /* pesan gagal Simpan Data Diri siswa ke server; tampil menetap di kartu Data Diri sampai ada simpan yang berhasil */
+var alumniFotoDraft = ''; /* foto alumni hasil crop di Pengaturan, menunggu disimpan */
+var alumniFotoSource = ''; /* sumber foto alumni terakhir yang dipilih (data URL), untuk di-crop ulang */
+var alumniSaveNotice = ''; /* pesan gagal Simpan Data Diri alumni ke server; tampil menetap di kartu Data Diri sampai ada simpan yang berhasil */
 var siswaListScope = null; /* cakupan daftar siswa dari kartu beranda: null = semua ranting */
 var siswaDetailKta = null; /* KTA siswa yang detailnya dibuka dari daftar siswa */
 
@@ -2496,7 +2562,7 @@ function handleProfilFoto(input){
    profil akun. Dipakai untuk foto Profil Ranting dan foto siswa di
    Pengaturan (cropTarget membedakan sasarannya). */
 var cropState=null;
-var cropTarget='ranting'; /* 'ranting' = foto Profil Ranting, 'siswa' = foto siswa di Pengaturan */
+var cropTarget='ranting'; /* 'ranting' = foto Profil Ranting, 'siswa' = foto siswa di Pengaturan, 'alumni' = foto alumni di Pengaturan */
 var CROP_OUT_W=600, CROP_OUT_H=800; /* ukuran hasil crop: pas foto 3:4 */
 function openFotoCropper(){
   cropTarget='ranting';
@@ -2607,6 +2673,17 @@ function cropApply(){
   var out=document.createElement('canvas'); out.width=CROP_OUT_W; out.height=CROP_OUT_H;
   out.getContext('2d').drawImage(cropState.img, sx, sy, sw, sh, 0, 0, CROP_OUT_W, CROP_OUT_H);
   var hasil=out.toDataURL('image/jpeg',0.85);
+  if(cropTarget==='alumni'){
+    alumniFotoDraft=hasil;
+    alumniFotoSource='';
+    var prevA=document.getElementById('alumni-foto-preview');
+    if(prevA) prevA.innerHTML='<img class="profil-photo-sm" src="'+alumniFotoDraft+'" alt="Pratinjau foto saya baru" />';
+    var infoA=document.getElementById('alumni-foto-info');
+    if(infoA) infoA.textContent='Foto hasil crop siap disimpan ('+CROP_OUT_W+'×'+CROP_OUT_H+' piksel, rasio 3:4). Tekan Simpan Data Diri untuk memasangnya sebagai foto profil kamu.';
+    closeFotoCropper();
+    toast('Hasil crop dipakai sebagai foto baru. Tekan Simpan Data Diri untuk menyimpannya.');
+    return;
+  }
   if(cropTarget==='siswa'){
     siswaFotoDraft=hasil;
     siswaFotoSource='';
@@ -2724,6 +2801,61 @@ function removeSiswaFoto(){
   var prev=document.getElementById('siswa-foto-preview');
   if(prev) prev.innerHTML='<div class="profil-photo-empty">Belum ada foto<br><span class="small">Foto ini tampil di KTA kamu.</span></div>';
   var info=document.getElementById('siswa-foto-info');
+  if(info) info.textContent='Foto dihapus untuk sesi ini. Tekan Simpan Data Diri untuk memastikan.';
+  toast('Foto saya dihapus.');
+}
+/* ---------------- Foto alumni di Pengaturan ----------------
+   Editor crop-nya SAMA dengan editor crop siswa & Profil Ranting
+   (kotak crop 3:4 yang bisa digeser & diubah ukurannya, hasil
+   600x800 piksel), hanya sasarannya berbeda: foto profil alumni,
+   disimpan ke kolom foto di tabel accounts. */
+function handleAlumniFoto(input){
+  var f=input.files&&input.files[0]; if(!f) return;
+  var info=document.getElementById('alumni-foto-info');
+  if(!/^image\//.test(f.type)){ if(info) info.textContent='File yang dipilih bukan gambar. Pilih file gambar (JPG/PNG/WebP).'; return; }
+  var rd=new FileReader();
+  rd.onload=function(){
+    var img=new Image();
+    img.onload=function(){
+      var MAXS=1600, w=img.naturalWidth||img.width, hgt=img.naturalHeight||img.height;
+      var sc=Math.min(1, MAXS/Math.max(w,hgt));
+      if(sc<1){
+        var cv=document.createElement('canvas'); cv.width=Math.max(1,Math.round(w*sc)); cv.height=Math.max(1,Math.round(hgt*sc));
+        cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+        alumniFotoSource=cv.toDataURL('image/jpeg',0.9);
+      } else {
+        alumniFotoSource=rd.result;
+      }
+      if(info) info.textContent='Atur crop foto pada jendela yang terbuka, lalu tekan Pakai Hasil Crop.';
+      openAlumniCropper();
+    };
+    img.onerror=function(){ if(info) info.textContent='Gambar tidak bisa dibaca. Coba file gambar lain.'; };
+    img.src=rd.result;
+  };
+  rd.readAsDataURL(f);
+  input.value='';
+}
+function openAlumniCropper(){
+  var src=alumniFotoSource || (alumniFotoDraft && alumniFotoDraft!=='__REMOVE__' ? alumniFotoDraft : '') || (currentUser? (currentUser.foto||'') : '');
+  if(!src){ toast('Pilih foto dulu lewat pilihan file di atas, baru bisa di-crop.'); return; }
+  var img=new Image();
+  img.onload=function(){
+    cropTarget='alumni';
+    var ct=document.getElementById('crop-title'); if(ct) ct.textContent='Crop Foto Saya';
+    cropState={ img:img, drag:null, box:null };
+    document.getElementById('crop-modal').classList.remove('hidden');
+    cropInitBox();
+    cropDraw();
+  };
+  img.onerror=function(){ toast('Foto tidak bisa dibuka untuk di-crop. Coba file gambar lain.'); };
+  img.src=src;
+}
+function removeAlumniFoto(){
+  alumniFotoDraft='__REMOVE__';
+  alumniFotoSource='';
+  var prev=document.getElementById('alumni-foto-preview');
+  if(prev) prev.innerHTML='<div class="profil-photo-empty">Belum ada foto<br><span class="small">Foto profil akun alumni kamu.</span></div>';
+  var info=document.getElementById('alumni-foto-info');
   if(info) info.textContent='Foto dihapus untuk sesi ini. Tekan Simpan Data Diri untuk memastikan.';
   toast('Foto saya dihapus.');
 }
@@ -2950,6 +3082,11 @@ function siswaFotoPreviewHTML(s){
   if(foto) return '<img class="profil-photo-sm" src="'+foto+'" alt="Foto saya" />';
   return '<div class="profil-photo-empty">Belum ada foto<br><span class="small">Foto ini tampil di KTA kamu.</span></div>';
 }
+function alumniFotoPreviewHTML(){
+  var foto = alumniFotoDraft==='__REMOVE__' ? '' : (alumniFotoDraft || (currentUser? currentUser.foto : '') || '');
+  if(foto) return '<img class="profil-photo-sm" src="'+foto+'" alt="Foto saya" />';
+  return '<div class="profil-photo-empty">Belum ada foto<br><span class="small">Foto profil akun alumni kamu.</span></div>';
+}
 function personalDataHTML(){
   if(currentUser.role==='siswa'){
     var s=myStudent();
@@ -2988,6 +3125,22 @@ function personalDataHTML(){
       +'<label class="f" for="pd-wa">Nomor WhatsApp Pelatih (format 62)</label><input type="tel" id="pd-wa" value="'+esc(rr&&rr.waPelatih?waNum(rr.waPelatih):'')+'" placeholder="628xxxxxxxxxx" />'
       +'<p class="small muted" style="margin:6px 0 0">Ranting / Sekolah: <b>'+esc(rr?rr.name:'-')+'</b></p>'
       +'<div class="btnrow"><button class="btn gold" onclick="savePersonalDiri()">Simpan Data Diri</button></div></div>';
+  }
+  if(currentUser.role==='alumni'){
+    var ra=currentUser.rantingNum? rantingByNum(currentUser.rantingNum) : null;
+    return '<div class="card"><h3>Data Diri Pribadi</h3>'
+      +(alumniSaveNotice? '<div class="notice warnbox" role="alert" style="border-color:var(--bad);background:#2a130d"><b>Gagal tersimpan ke server.</b><br>'+esc(alumniSaveNotice)+'</div>' : '')
+      +'<p class="small muted" style="margin-top:0">Nama ini yang tampil sebagai judul besar di header beranda akun kamu. Data diri alumni tersimpan di tabel akun (accounts) — lengkap dengan alamat, nomor WA, dan foto profil. Foto di-crop dulu dengan kotak crop rasio 3:4 (hasil 600&times;800 piksel) sebelum disimpan.</p>'
+      +'<div id="alumni-foto-preview">'+alumniFotoPreviewHTML()+'</div>'
+      +'<label class="f" for="pd-foto-alumni">Foto Saya</label>'
+      +'<input type="file" id="pd-foto-alumni" accept="image/*" onchange="handleAlumniFoto(this)" />'
+      +'<p class="small muted" id="alumni-foto-info">'+(currentUser.foto?'Foto saat ini sudah terpasang. Pilih file baru untuk menggantinya, atau tekan Crop / Edit Foto untuk memotong ulang foto yang ada.':'Belum ada foto. Pilih file gambar untuk memasang foto profil kamu.')+'</p>'
+      +'<div class="btnrow" style="margin-top:6px"><button class="btn small" onclick="openAlumniCropper()">Crop / Edit Foto</button><button class="btn small danger" onclick="removeAlumniFoto()">Hapus Foto</button></div>'
+      +'<label class="f" for="pd-nama">Nama Lengkap</label><input type="text" id="pd-nama" value="'+esc(currentUser.name||'')+'" />'
+      +'<label class="f" for="pd-alamat">Alamat</label><textarea id="pd-alamat">'+esc(currentUser.alamat||'')+'</textarea>'
+      +'<label class="f" for="pd-wa">Nomor WhatsApp</label><input type="tel" id="pd-wa" value="'+esc(currentUser.wa||'')+'" placeholder="08xxxxxxxxxx" />'
+      +(ra? '<p class="small muted" style="margin:6px 0 0">Ranting / Sekolah: <b>'+esc(ra.name)+'</b></p>' : '')
+      +'<div class="btnrow"><button class="btn gold" onclick="savePersonalAlumni()">Simpan Data Diri</button></div></div>';
   }
   var r2=currentUser.rantingNum? rantingByNum(currentUser.rantingNum) : null;
   return '<div class="card"><h3>Data Diri Pribadi</h3>'
@@ -3045,6 +3198,37 @@ function savePersonalSiswa(){
     siswaSaveNotice='';
     if(currentUser && currentMenu==='pengaturan') renderContent();
     toast('Data diri tersimpan ke server — KTA kamu sudah memakai data & foto terbaru.');
+  });
+}
+function savePersonalAlumni(){
+  var nama=document.getElementById('pd-nama').value.trim();
+  if(!nama){ toast('Isi nama lengkap dulu.'); return; }
+  currentUser.name=nama;
+  currentUser.alamat=document.getElementById('pd-alamat').value.trim();
+  currentUser.wa=document.getElementById('pd-wa').value.trim();
+  if(alumniFotoDraft) currentUser.foto = alumniFotoDraft==='__REMOVE__' ? '' : alumniFotoDraft;
+  alumniFotoDraft=''; alumniFotoSource='';
+  /* Simpan ke server SELALU lewat saveAlumniToServer: baris
+     accounts alumni bisa BELUM ADA di server (tabel accounts
+     pernah kosong — akun alumni contoh hanya hidup di aplikasi),
+     jadi simpan harus bisa MEMBUAT barisnya (email, role Alumni,
+     display_name, ranting_id, alamat, wa, foto, password_hash
+     pengganti yang tidak kosong), bukan hanya mengubah. Hasil
+     simpan TIDAK ditelan: gagal -> pesan merah menetap di kartu
+     Data Diri (alumniSaveNotice) + toast GAGAL yang jelas, bukan
+     pesan sukses palsu. */
+  var p=saveAlumniToServer(currentUser);
+  enterApp(); goMenu('pengaturan');
+  p.then(function(res){
+    if(!res.ok){
+      alumniSaveNotice='Data diri tampil berubah di sesi ini, TAPI GAGAL tersimpan ke server'+(res.error? ' — '+res.error : '')+'. Perubahan ini akan hilang saat aplikasi ditutup atau dimuat ulang. Periksa koneksi internet, lalu tekan Simpan Data Diri sekali lagi.';
+      if(currentUser && currentMenu==='pengaturan') renderContent();
+      toast('GAGAL menyimpan data diri ke server'+(res.error? ' — '+res.error : '')+'. Perubahan belum tersimpan permanen — tekan Simpan Data Diri sekali lagi.');
+      return;
+    }
+    alumniSaveNotice='';
+    if(currentUser && currentMenu==='pengaturan') renderContent();
+    toast(res.created? 'Data diri tersimpan ke server — baris akun alumni kamu baru dibuat di server, jadi data ini tetap ada setelah muat ulang.' : 'Data diri tersimpan ke server — data ini tetap ada setelah muat ulang.');
   });
 }
 function savePersonalDiri(){
