@@ -710,6 +710,71 @@ function rantingRow(r){
 function studentRow(s){
   return { kta:s.kta, name:s.name, ranting_num:s.rantingNum, sabuk:s.sabuk, status:s.status||'Aktif', tempat_lahir:s.tempatLahir||'', tgl_lahir:s.tglLahir||null, ttl:s.ttl||'', asal_sekolah:s.sekolah||'', pelatih:s.pelatih||'', alamat:s.alamat||'', wa:s.wa||'', ortu_nama:s.ortuNama||'', ortu_alamat:s.ortuAlamat||'', ortu_wa:s.ortuWa||'', email:s.email||'', foto:s.foto||'' };
 }
+/* ---------------- Simpan siswa ke server (skema ASLI tabel students) ----------------
+   PENYEBAB Simpan Data Diri siswa gagal diam-diam, ketemu dari
+   jawaban server sendiri: tabel students di Supabase memakai nama
+   kolom skema aslinya — full_name, kta_number, ranting_id, belt,
+   birth_place, birth_date, school_origin, coach_name, address,
+   parent_name, parent_address, parent_wa — sedangkan studentRow()
+   di atas mengirim nama buatan aplikasi (kta, name, ranting_num,
+   sabuk, tempat_lahir, alamat, ortu_nama, email, ...) yang TIDAK
+   ADA SATU PUN di tabel itu. Setiap tulis ditolak server dengan
+   PGRST204 "Could not find the '...' column of 'students'", lalu
+   mesin buang-kolom di sbSync membuang kolom satu per satu sampai
+   kiriman kosong — tidak ada baris yang pernah tercipta (tabel
+   tetap 0 baris) dan di sesi perubahan tetap tampil seolah
+   berhasil. Jalur khusus di bawah ini TIDAK memakai sbSync dan
+   TIDAK membuang kolom apa pun: ia mengirim baris LENGKAP dengan
+   nama kolom asli server dan semua kolom wajibnya (ranting_id &
+   full_name NOT NULL, sisanya NOT NULL DEFAULT '' ikut dikirim
+   eksplisit; created_at diisi default server), membuat baris baru
+   bila belum ada, dan mengembalikan error server apa adanya. */
+function studentServerRow(s){
+  var seq=null; var m=String(s.kta||'').match(/(\d+)\s*$/); if(m) seq=parseInt(m[1],10);
+  return {
+    ranting_id: (s.rantingNum==null? null : s.rantingNum),
+    full_name: s.name||'',
+    birth_place: s.tempatLahir||'',
+    birth_date: s.tglLahir||'',
+    school_origin: s.sekolah||'',
+    belt: s.sabuk||'Calon Siswa',
+    coach_name: s.pelatih||'',
+    address: s.alamat||'',
+    wa: s.wa||'',
+    parent_name: s.ortuNama||'',
+    parent_address: s.ortuAlamat||'',
+    parent_wa: s.ortuWa||'',
+    status: s.status||'Aktif',
+    kta_number: s.kta,
+    kta_seq: seq,
+    foto: s.foto||''
+  };
+}
+/* saveStudentToServer(s): cek dulu baris siswa lewat kta_number.
+   Ada -> UPDATE baris itu. Belum ada -> INSERT baris lengkap.
+   Hasil selalu {ok:true} atau {ok:false, error} — tidak pernah
+   gagal diam-diam. */
+function saveStudentToServer(s){
+  if(!sb) return Promise.resolve({ ok:false, error:'Pustaka Supabase tidak termuat' });
+  sbMarkDirty('students', s.kta);
+  var row=studentServerRow(s);
+  function fail(e){ return { ok:false, error:String((e&&(e.message||e.details))||e||'Simpan ke server gagal') }; }
+  return sbTimeout(sb.from('students').select('id').eq('kta_number', s.kta), 9000).then(function(res){
+    if(res && res.error) return { ok:false, error:(res.error.message||'Gagal memeriksa baris siswa di server') };
+    var exists=!!(res && res.data && res.data.length);
+    if(exists){
+      return sbTimeout(sb.from('students').update(row).eq('kta_number', s.kta).select(), 9000).then(function(u){
+        if(u && u.error) return { ok:false, error:(u.error.message||'Ubah data siswa di server gagal') };
+        if(u && u.data && u.data.length) return { ok:true, updated:true };
+        return { ok:false, error:'Baris siswa tidak ditemukan di server saat menyimpan' };
+      }).catch(fail);
+    }
+    return sbTimeout(sb.from('students').insert(row).select(), 9000).then(function(ins){
+      if(ins && ins.error) return { ok:false, error:(ins.error.message||'Buat baris siswa di server gagal') };
+      return { ok:true, created:true };
+    }).catch(fail);
+  }).catch(fail);
+}
 /* ---------------- Pustaka berat: muat malas (lazy) ----------------
    Barcode, QR, dan PDF hanya dibutuhkan setelah masuk. Memuatnya di
    latar setelah login membuat halaman awal ringan dan tombol selalu
@@ -772,10 +837,19 @@ function loadFromSupabase(){
   jobs.push(sbFetch('students').then(function(rows){
     if(!rows || !rows.length) return;
     rows.forEach(function(s){
-      if(s.kta){
-        if(sbIsDirty('students', s.kta)) return;
-        var obj={ kta:s.kta, name:s.name, rantingNum:s.ranting_num, sabuk:s.sabuk, status:s.status||'Aktif', tempatLahir:s.tempat_lahir||'', tglLahir:s.tgl_lahir||'', ttl:s.ttl||'', sekolah:s.asal_sekolah||'', pelatih:s.pelatih||'', alamat:s.alamat||'', wa:s.wa||'', ortuNama:s.ortu_nama||'', ortuAlamat:s.ortu_alamat||'', ortuWa:s.ortu_wa||'', email:s.email||'', foto:s.foto||'' };
-        var old=studentByKta(s.kta);
+      /* Tabel students di server memakai nama kolom skema asli
+         (kta_number, full_name, ranting_id, belt, birth_place,
+         birth_date, school_origin, coach_name, address, parent_*);
+         petakan ke nama aplikasi lebih dulu, dengan nama lama
+         sebagai cadangan, supaya baris yang tersimpan di server
+         benar-benar terbaca lagi setelah muat ulang. */
+      var kta=s.kta||s.kta_number||'';
+      var tempat=s.tempat_lahir||s.birth_place||'';
+      var tgl=s.tgl_lahir||s.birth_date||'';
+      if(kta){
+        if(sbIsDirty('students', kta)) return;
+        var obj={ kta:kta, name:s.name||s.full_name||'', rantingNum:(s.ranting_num!=null?s.ranting_num:s.ranting_id), sabuk:s.sabuk||s.belt||'Calon Siswa', status:s.status||'Aktif', tempatLahir:tempat, tglLahir:tgl, ttl:s.ttl||(tempat?(tempat+', '+(tgl?fmtDate(tgl):'')):''), sekolah:s.asal_sekolah||s.school_origin||'', pelatih:s.pelatih||s.coach_name||'', alamat:s.alamat||s.address||'', wa:s.wa||'', ortuNama:s.ortu_nama||s.parent_name||'', ortuAlamat:s.ortu_alamat||s.parent_address||'', ortuWa:s.ortu_wa||s.parent_wa||'', email:s.email||'', foto:s.foto||'' };
+        var old=studentByKta(kta);
         if(old){ Object.keys(obj).forEach(function(k){ old[k]=obj[k]; }); }
         else DB.students.push(obj);
       } else if(s.status==='Menunggu Persetujuan' && s.email){
@@ -869,6 +943,7 @@ var profilFotoSource = ''; /* sumber foto terakhir yang dipilih (data URL), untu
 var profilEditOpen = false; /* form Edit Profil Ranting tampil hanya setelah tombol Edit diklik */
 var siswaFotoDraft = ''; /* foto siswa hasil crop di Pengaturan, menunggu disimpan */
 var siswaFotoSource = ''; /* sumber foto siswa terakhir yang dipilih (data URL), untuk di-crop ulang */
+var siswaSaveNotice = ''; /* pesan gagal Simpan Data Diri siswa ke server; tampil menetap di kartu Data Diri sampai ada simpan yang berhasil */
 var siswaListScope = null; /* cakupan daftar siswa dari kartu beranda: null = semua ranting */
 var siswaDetailKta = null; /* KTA siswa yang detailnya dibuka dari daftar siswa */
 
@@ -2881,6 +2956,7 @@ function personalDataHTML(){
     if(!s) return '<div class="card"><h3>Data Diri Pribadi</h3><p class="muted" style="margin-top:0">Akun ini belum terhubung ke data siswa, jadi data diri belum bisa diedit di sini. Hubungi Admin Ranting.</p></div>';
     var r=rantingByNum(s.rantingNum);
     return '<div class="card"><h3>Data Diri Pribadi</h3>'
+      +(siswaSaveNotice? '<div class="notice warnbox" role="alert" style="border-color:var(--bad);background:#2a130d"><b>Gagal tersimpan ke server.</b><br>'+esc(siswaSaveNotice)+'</div>' : '')
       +'<p class="small muted" style="margin-top:0">Data ini yang tampil di KTA (kartu anggota) kamu. Isi dengan benar — terutama foto, karena saat baru daftar biasanya belum ada foto. Foto di-crop dulu dengan kotak crop rasio 3:4 (hasil 600&times;800 piksel, pas untuk KTA) sebelum disimpan.</p>'
       +'<div id="siswa-foto-preview">'+siswaFotoPreviewHTML(s)+'</div>'
       +'<label class="f" for="pd-foto">Foto Saya (untuk KTA)</label>'
@@ -2924,29 +3000,11 @@ function savePersonalSiswa(){
   var s=myStudent(); if(!s) return;
   var nama=document.getElementById('pd-nama').value.trim();
   if(!nama){ toast('Isi nama lengkap dulu.'); return; }
-  var tempat=document.getElementById('pd-tempat').value.trim();
-  var tgl=document.getElementById('pd-tgl').value;
-  var ttl=tempat? (tempat+', '+(tgl?fmtDate(tgl):'')) : (s.ttl||'');
-  /* Hanya kolom yang berubah yang dikirim; foto hanya ikut bila
-     ada foto baru hasil crop atau foto memang dihapus. */
-  var patch={};
-  function put(col, val, old){ if(String(val==null?'':val)!==String(old==null?'':old)) patch[col]=val; }
-  put('name', nama, s.name);
-  put('tempat_lahir', tempat, s.tempatLahir||'');
-  put('tgl_lahir', tgl||null, s.tglLahir||null);
-  put('ttl', ttl, s.ttl||'');
-  put('asal_sekolah', document.getElementById('pd-sekolah').value.trim(), s.sekolah||'');
-  put('sabuk', document.getElementById('pd-sabuk').value, s.sabuk||'');
-  put('pelatih', document.getElementById('pd-pelatih').value.trim(), s.pelatih||'');
-  put('alamat', document.getElementById('pd-alamat').value.trim(), s.alamat||'');
-  put('wa', document.getElementById('pd-wa').value.trim(), s.wa||'');
-  put('ortu_nama', document.getElementById('pd-ortunama').value.trim(), s.ortuNama||'');
-  put('ortu_alamat', document.getElementById('pd-ortualamat').value.trim(), s.ortuAlamat||'');
-  put('ortu_wa', document.getElementById('pd-ortuwa').value.trim(), s.ortuWa||'');
-  var fotoChanged=!!siswaFotoDraft;
-  if(fotoChanged) patch.foto = siswaFotoDraft==='__REMOVE__' ? '' : siswaFotoDraft;
-  s.name=nama; s.tempatLahir=tempat; s.tglLahir=tgl; s.ttl=ttl;
-  s.sekolah=patch.asal_sekolah!==undefined? patch.asal_sekolah : s.sekolah;
+  s.name=nama;
+  s.tempatLahir=document.getElementById('pd-tempat').value.trim();
+  s.tglLahir=document.getElementById('pd-tgl').value;
+  s.ttl=s.tempatLahir? (s.tempatLahir+', '+(s.tglLahir?fmtDate(s.tglLahir):'')) : (s.ttl||'');
+  s.sekolah=document.getElementById('pd-sekolah').value.trim();
   s.sabuk=document.getElementById('pd-sabuk').value;
   s.pelatih=document.getElementById('pd-pelatih').value.trim();
   s.alamat=document.getElementById('pd-alamat').value.trim();
@@ -2954,20 +3012,40 @@ function savePersonalSiswa(){
   s.ortuNama=document.getElementById('pd-ortunama').value.trim();
   s.ortuAlamat=document.getElementById('pd-ortualamat').value.trim();
   s.ortuWa=document.getElementById('pd-ortuwa').value.trim();
-  if(fotoChanged) s.foto = siswaFotoDraft==='__REMOVE__' ? '' : siswaFotoDraft;
+  if(siswaFotoDraft) s.foto = siswaFotoDraft==='__REMOVE__' ? '' : siswaFotoDraft;
   siswaFotoDraft=''; siswaFotoSource='';
-  var jobs=[];
-  if(Object.keys(patch).length) jobs.push(sbSync('students', patch, { kta:s.kta }, studentRow(s)));
-  /* Akun: UPDATE saja, hanya kolom yang berubah. JANGAN sbSync —
-     sbSync beralih ke INSERT bila UPDATE tidak mengembalikan baris,
-     dan INSERT ke accounts mengirim password_hash null (kolom itu
-     NOT NULL di server) sehingga simpan Data Diri ditolak. Bila
-     baris accounts memang tidak ada di server, pembaruan ini
-     dilewati diam-diam (sbUpdateAccountsIfExists) — bukan kegagalan. */
-  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateAccountsIfExists({ name:nama }, { email:currentUser.email })); }
+  /* Simpan ke server SELALU dijalankan dengan baris LENGKAP skema
+     asli students (saveStudentToServer) — bukan lagi patch kolom
+     yang berubah lewat sbSync. Alasannya: (1) baris siswa bisa
+     BELUM ADA di tabel students (tabel pernah kosong 0 baris —
+     data siswa contoh hanya hidup di aplikasi), jadi simpan harus
+     bisa MEMBUAT barisnya, bukan hanya mengubah; (2) nama kolom
+     yang lama tidak ada di tabel server sehingga selalu ditolak.
+     Hasil simpan TIDAK ditelan: gagal -> pesan merah menetap di
+     kartu Data Diri (siswaSaveNotice) + toast gagal yang jelas. */
+  var jobs=[ saveStudentToServer(s) ];
+  /* Akun: UPDATE saja, hanya bila nama berubah, memakai kolom
+     display_name (nama kolom akun di server — bukan 'name').
+     JANGAN sbSync — sbSync beralih ke INSERT bila UPDATE tidak
+     mengembalikan baris, dan INSERT ke accounts mengirim
+     password_hash null (kolom itu NOT NULL di server). Bila baris
+     accounts memang tidak ada di server, pembaruan ini dilewati
+     diam-diam (sbUpdateAccountsIfExists) — bukan kegagalan. */
+  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateAccountsIfExists({ display_name:nama }, { email:currentUser.email })); }
   enterApp(); goMenu('pengaturan');
-  if(jobs.length) sbToastResult(Promise.all(jobs).then(function(rs){ for(var i=0;i<rs.length;i++) if(!rs[i].ok) return rs[i]; return { ok:true }; }), 'Data diri tersimpan — KTA kamu sudah memakai data & foto terbaru.');
-  else toast('Tidak ada perubahan data diri.');
+  Promise.all(jobs).then(function(rs){
+    for(var i=0;i<rs.length;i++){
+      if(!rs[i].ok){
+        siswaSaveNotice='Data diri tampil berubah di sesi ini, TAPI GAGAL tersimpan ke server'+(rs[i].error? ' — '+rs[i].error : '')+'. Perubahan ini akan hilang saat aplikasi ditutup atau dimuat ulang. Periksa koneksi internet, lalu tekan Simpan Data Diri sekali lagi.';
+        if(currentUser && currentMenu==='pengaturan') renderContent();
+        toast('GAGAL menyimpan data diri ke server'+(rs[i].error? ' — '+rs[i].error : '')+'. Perubahan belum tersimpan permanen — tekan Simpan Data Diri sekali lagi.');
+        return;
+      }
+    }
+    siswaSaveNotice='';
+    if(currentUser && currentMenu==='pengaturan') renderContent();
+    toast('Data diri tersimpan ke server — KTA kamu sudah memakai data & foto terbaru.');
+  });
 }
 function savePersonalDiri(){
   var nama=document.getElementById('pd-nama').value.trim();
