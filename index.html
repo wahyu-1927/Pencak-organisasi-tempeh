@@ -659,7 +659,7 @@ function sbToastResult(promise, okMsg){
    sebagian saja (hanya kolom yang diedit), lihat saveProfilRanting,
    saveEditRanting, dan saveQris. */
 function rantingRow(r){
-  return { num:r.num, roman:r.roman||ROMAN[r.num-1]||String(r.num), name:r.name, jenis:r.jenis||'Ranting', iuran:r.iuran||0, tempat:r.tempat||'', qris:r.qris||'', note:r.note||'', foto:r.foto||'', pelatih:r.pelatih||'', wa_pelatih:r.waPelatih||'' };
+  return { num:r.num, number:r.num, roman:r.roman||ROMAN[r.num-1]||String(r.num), name:r.name, jenis:r.jenis||'Ranting', iuran:r.iuran||0, tempat:r.tempat||'', qris:r.qris||'', note:r.note||'', foto:r.foto||'', pelatih:r.pelatih||'', wa_pelatih:r.waPelatih||'' };
 }
 function studentRow(s){
   return { kta:s.kta, name:s.name, ranting_num:s.rantingNum, sabuk:s.sabuk, status:s.status||'Aktif', tempat_lahir:s.tempatLahir||'', tgl_lahir:s.tglLahir||null, ttl:s.ttl||'', asal_sekolah:s.sekolah||'', pelatih:s.pelatih||'', alamat:s.alamat||'', wa:s.wa||'', ortu_nama:s.ortuNama||'', ortu_alamat:s.ortuAlamat||'', ortu_wa:s.ortuWa||'', email:s.email||'', foto:s.foto||'' };
@@ -1700,7 +1700,7 @@ function saveQris(n){
      ikut, supaya satu kolom yang belum ada di tabel ranting tidak
      menggagalkan simpan QRIS. Baris lengkap hanya dipakai bila baris
      rantingnya belum ada di server dan harus dibuat baru. */
-  var p=sbSync('ranting', { qris:r.qris }, { num:n }, rantingRow(r));
+  var p=sbSync('ranting', { qris:r.qris, number:r.num }, { num:n }, rantingRow(r));
   renderContent(); sbToastResult(p, 'QRIS '+r.name+' tersimpan.');
 }
 function addKasEntry(){
@@ -2640,6 +2640,7 @@ function saveProfilRanting(){
   profilEditOpen=false;
   enterApp(); goMenu('profil');
   if(!Object.keys(patch).length){ toast('Tidak ada perubahan pada Profil Ranting.'); return; }
+  patch.number=r.num;
   var p=sbSync('ranting', patch, { num:r.num }, rantingRow(r));
   sbToastResult(p, 'Profil Ranting tersimpan.');
 }
@@ -2676,7 +2677,7 @@ function saveEditRanting(){
   /* Sama seperti Profil Ranting: kirim hanya kolom yang diedit di
      form ini (tanpa foto & QRIS), supaya satu kolom yang belum ada
      di tabel ranting tidak menggagalkan seluruh simpan. */
-  var patch={ name:r.name, jenis:r.jenis, iuran:r.iuran, tempat:r.tempat, pelatih:r.pelatih, wa_pelatih:r.waPelatih, note:r.note };
+  var patch={ name:r.name, number:r.num, jenis:r.jenis, iuran:r.iuran, tempat:r.tempat, pelatih:r.pelatih, wa_pelatih:r.waPelatih, note:r.note };
   var p=sbSync('ranting', patch, { num:r.num }, rantingRow(r));
   enterApp();
   sbToastResult(p, 'Profil ranting tersimpan.');
@@ -2928,7 +2929,7 @@ function savePersonalDiri(){
       var patch={};
       if(r.pelatih!==nama) patch.pelatih=nama;
       if((r.waPelatih||'')!==waFixed) patch.wa_pelatih=waFixed;
-      if(Object.keys(patch).length){ r.pelatih=nama; r.waPelatih=waFixed; jobs.push(sbSync('ranting', patch, { num:r.num }, rantingRow(r))); }
+      if(Object.keys(patch).length){ patch.number=r.num; r.pelatih=nama; r.waPelatih=waFixed; jobs.push(sbSync('ranting', patch, { num:r.num }, rantingRow(r))); }
     }
   }
   if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbSync('accounts', { name:nama }, { email:currentUser.email }, { email:currentUser.email, role:currentUser.role, name:nama, ranting_num:currentUser.rantingNum })); }
