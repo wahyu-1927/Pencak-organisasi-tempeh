@@ -627,6 +627,21 @@ function sbUpdateOnly(table, row, match){
   }
   return attempt(row, 0);
 }
+/* Pembaruan akun OPSIONAL untuk jalur Simpan Data Diri: UPDATE saja
+   ke tabel accounts, dan bila baris akunnya memang tidak ada di
+   server (mis. akun contoh yang tidak punya baris accounts), lewati
+   diam-diam TANPA pesan gagal — data utamanya (ranting / students)
+   sudah tersimpan, jadi peringatan "Baris tidak ditemukan di
+   server" dari sini adalah peringatan palsu. JANGAN PERNAH beralih
+   ke INSERT dari jalur ini: baris accounts baru tidak dibuat di
+   sini. Error lain (koneksi, kolom, dsb.) tetap dilaporkan apa
+   adanya supaya kegagalan asli tidak tertutup. */
+function sbUpdateAccountsIfExists(row, match){
+  return sbUpdateOnly('accounts', row, match).then(function(res){
+    if(!res.ok && res.error==='Baris tidak ditemukan di server') return { ok:true, skipped:true };
+    return res;
+  });
+}
 /* Simpan ranting yang barisnya SUDAH ADA di server: UPDATE saja,
    TIDAK PERNAH INSERT. sbSync tidak dipakai di sini karena ia
    beralih ke INSERT bila UPDATE tidak mengembalikan baris (mis.
@@ -2946,8 +2961,10 @@ function savePersonalSiswa(){
   /* Akun: UPDATE saja, hanya kolom yang berubah. JANGAN sbSync —
      sbSync beralih ke INSERT bila UPDATE tidak mengembalikan baris,
      dan INSERT ke accounts mengirim password_hash null (kolom itu
-     NOT NULL di server) sehingga simpan Data Diri ditolak. */
-  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateOnly('accounts', { name:nama }, { email:currentUser.email })); }
+     NOT NULL di server) sehingga simpan Data Diri ditolak. Bila
+     baris accounts memang tidak ada di server, pembaruan ini
+     dilewati diam-diam (sbUpdateAccountsIfExists) — bukan kegagalan. */
+  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateAccountsIfExists({ name:nama }, { email:currentUser.email })); }
   enterApp(); goMenu('pengaturan');
   if(jobs.length) sbToastResult(Promise.all(jobs).then(function(rs){ for(var i=0;i<rs.length;i++) if(!rs[i].ok) return rs[i]; return { ok:true }; }), 'Data diri tersimpan — KTA kamu sudah memakai data & foto terbaru.');
   else toast('Tidak ada perubahan data diri.');
@@ -2972,8 +2989,12 @@ function savePersonalDiri(){
      TIDAK PERNAH ikut dikirim. JANGAN sbSync — sbSync beralih ke
      INSERT bila UPDATE tidak mengembalikan baris, dan INSERT ke
      accounts mengirim password_hash null (kolom itu NOT NULL di
-     server) sehingga simpan Data Diri pelatih ditolak server. */
-  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateOnly('accounts', { name:nama }, { email:currentUser.email })); }
+     server) sehingga simpan Data Diri pelatih ditolak server. Bila
+     baris accounts memang tidak ada di server (akun contoh),
+     pembaruan ini dilewati diam-diam lewat sbUpdateAccountsIfExists
+     — simpan ke tabel ranting di atas sudah berhasil, jadi tidak
+     boleh ada peringatan gagal palsu. */
+  if(currentUser.name!==nama){ currentUser.name=nama; jobs.push(sbUpdateAccountsIfExists({ name:nama }, { email:currentUser.email })); }
   enterApp(); goMenu('pengaturan');
   if(jobs.length) sbToastResult(Promise.all(jobs).then(function(rs){ for(var i=0;i<rs.length;i++) if(!rs[i].ok) return rs[i]; return { ok:true }; }), 'Data diri tersimpan.');
   else toast('Tidak ada perubahan data diri.');
