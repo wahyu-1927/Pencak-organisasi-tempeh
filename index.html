@@ -175,6 +175,8 @@ footer.site{border-top:1px solid var(--line);margin-top:32px;padding:16px 0 6px;
 .qris-big img,.qris-big canvas{width:192px;height:192px}
 .barcode-light{background:#fff;border-radius:10px;padding:9px;display:inline-block;line-height:0}
 .barcode-light svg{width:232px;height:60px;max-width:80vw}
+@media print{body *{visibility:hidden!important}#qr-print,#qr-print *{visibility:visible!important}#qr-print{position:absolute!important;left:0!important;top:0!important;width:100%!important;box-shadow:none!important;border:none!important}}
+#qr-reader video{width:100%!important;border-radius:10px}
 </style>
 </head>
 <body>
@@ -845,7 +847,8 @@ function loadAppLibs(){
     'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js',
     'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js',
     'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
-    'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+    'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+    'https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js'
   ];
   Promise.all(urls.map(loadLib)).then(function(){
     /* Bila pengguna sedang membuka halaman yang memakai barcode/QR,
@@ -858,6 +861,36 @@ function sbFetch(table){
     if(res && !res.error && res.data) return res.data;
     return null;
   }).catch(function(){ return null; });
+}
+var _attRaw=null; /* baris mentah tabel attendance dari server, untuk dipetakan ulang setelah students termuat */
+function attRowFromServer(a){
+  /* Tabel attendance di server memakai kolom ASLI: student_id (bigint,
+     id baris students), date, status, schedule_id, marked_by.
+     Kolom student_kta / tanggal TIDAK ADA di tabel itu, jadi pemetaan
+     lama selalu menghasilkan kta kosong dan semua absensi server
+     hilang setelah muat ulang. Kolom attended_ranting_num /
+     home_ranting_num / attendance_note hanya ada bila SQL
+     attendance-qr-columns.sql sudah dijalankan; sebelum itu
+     ranting absen dianggap ranting asal siswa. */
+  var stu=null;
+  if(a.student_id!==undefined && a.student_id!==null) stu=DB.students.filter(function(s){ return s.serverId===a.student_id; })[0];
+  if(!stu && a.student_kta) stu=studentByKta(a.student_kta);
+  if(!stu) return null;
+  return { kta:stu.kta, date:a.date||a.tanggal||'', status:a.status||'Hadir',
+    scheduleId:(a.schedule_id==null?null:a.schedule_id),
+    rantingNum:(a.attended_ranting_num==null? stu.rantingNum : a.attended_ranting_num),
+    homeRantingNum:(a.home_ranting_num==null? stu.rantingNum : a.home_ranting_num),
+    note:a.attendance_note||'',
+    viaQr:!!(a.attended_ranting_num!=null || a.attendance_note) };
+}
+function remapAttendanceFromServer(){
+  if(!_attRaw || sbDirty['attendance']) return;
+  var rows=_attRaw.map(attRowFromServer).filter(function(a){ return a && a.kta && a.date; });
+  rows.forEach(function(nr){
+    var ix=-1;
+    for(var i=0;i<DB.attendance.length;i++){ var o=DB.attendance[i]; if(o.kta===nr.kta && o.date===nr.date && (o.rantingNum||null)===(nr.rantingNum||null)){ ix=i; break; } }
+    if(ix>=0) DB.attendance[ix]=nr; else DB.attendance.push(nr);
+  });
 }
 function loadFromSupabase(){
   if(!sb) return;
@@ -898,7 +931,7 @@ function loadFromSupabase(){
       var tgl=s.tgl_lahir||s.birth_date||'';
       if(kta){
         if(sbIsDirty('students', kta)) return;
-        var obj={ kta:kta, name:s.name||s.full_name||'', rantingNum:(s.ranting_num!=null?s.ranting_num:s.ranting_id), sabuk:s.sabuk||s.belt||'Calon Siswa', status:s.status||'Aktif', tempatLahir:tempat, tglLahir:tgl, ttl:s.ttl||(tempat?(tempat+', '+(tgl?fmtDate(tgl):'')):''), sekolah:s.asal_sekolah||s.school_origin||'', pelatih:s.pelatih||s.coach_name||'', alamat:s.alamat||s.address||'', wa:s.wa||'', ortuNama:s.ortu_nama||s.parent_name||'', ortuAlamat:s.ortu_alamat||s.parent_address||'', ortuWa:s.ortu_wa||s.parent_wa||'', email:s.email||'', foto:s.foto||'' };
+        var obj={ kta:kta, serverId:(s.id==null?null:s.id), name:s.name||s.full_name||'', rantingNum:(s.ranting_num!=null?s.ranting_num:s.ranting_id), sabuk:s.sabuk||s.belt||'Calon Siswa', status:s.status||'Aktif', tempatLahir:tempat, tglLahir:tgl, ttl:s.ttl||(tempat?(tempat+', '+(tgl?fmtDate(tgl):'')):''), sekolah:s.asal_sekolah||s.school_origin||'', pelatih:s.pelatih||s.coach_name||'', alamat:s.alamat||s.address||'', wa:s.wa||'', ortuNama:s.ortu_nama||s.parent_name||'', ortuAlamat:s.ortu_alamat||s.parent_address||'', ortuWa:s.ortu_wa||s.parent_wa||'', email:s.email||'', foto:s.foto||'' };
         var old=studentByKta(kta);
         if(old){ Object.keys(obj).forEach(function(k){ old[k]=obj[k]; }); }
         else DB.students.push(obj);
@@ -940,7 +973,7 @@ function loadFromSupabase(){
   }));
   jobs.push(sbFetch('schedules').then(function(rows){
     if(!rows || !rows.length || sbDirty['schedules']) return;
-    DB.schedules=rows.map(function(x,i){ return { id:'sb-sch-'+(x.id||i), rantingNum:x.ranting_num, hari:x.hari||'', jam:x.jam||'', tempat:x.tempat||'', pelatih:x.pelatih||'', program:x.program||'' }; });
+    DB.schedules=rows.map(function(x,i){ return { id:'sb-sch-'+(x.id||i), serverId:(x.id==null?null:x.id), rantingNum:x.ranting_num, hari:x.hari||'', jam:x.jam||'', tempat:x.tempat||'', pelatih:x.pelatih||'', program:x.program||'' }; });
   }));
   jobs.push(sbFetch('programs').then(function(rows){
     if(!rows || !rows.length || sbDirty['programs']) return;
@@ -948,7 +981,8 @@ function loadFromSupabase(){
   }));
   jobs.push(sbFetch('attendance').then(function(rows){
     if(!rows || !rows.length || sbDirty['attendance']) return;
-    DB.attendance=rows.map(function(a){ return { kta:a.student_kta, date:a.tanggal||a.date||'', status:a.status||'Hadir', scheduleId:null }; }).filter(function(a){ return a.kta && a.date; });
+    _attRaw=rows;
+    remapAttendanceFromServer();
   }));
   jobs.push(sbFetch('kas_entries').then(function(rows){
     if(!rows || !rows.length || sbDirty['kas_entries']) return;
@@ -987,6 +1021,7 @@ function loadFromSupabase(){
     });
   }));
   Promise.all(jobs).then(function(){
+    remapAttendanceFromServer();
     fillRantingSelects();
     /* Bila pengguna sudah masuk dan sedang di Beranda, gambar ulang
        supaya data server yang baru tiba langsung tampil. Menu lain
@@ -1309,7 +1344,7 @@ function renderProfil(s){
     +'<p style="margin:2px 0">Asal Sekolah: '+esc(s.sekolah||'-')+' &bull; Pelatih: '+esc(s.pelatih||'-')+'</p></div>'
     +'<div class="grid2"><div class="stat"><b>'+(pct===null?'—':pct+'%')+'</b><span>Persentase kehadiran</span></div>'
     +'<div class="stat"><b style="font-size:20px;padding-top:6px">'+esc(kas.status)+'</b><span>Status kas '+esc(monthLabel(monthKey()))+'</span></div></div>'
-    +'<div class="card"><h3>Riwayat Kehadiran</h3>'+(attRows.length? '<table><thead><tr><th>Tanggal</th><th>Status</th></tr></thead><tbody>'+attRows.map(function(a){ return '<tr><td>'+esc(fmtDate(a.date))+'</td><td>'+esc(a.status)+'</td></tr>'; }).join('')+'</tbody></table>' : '<div class="empty">Belum ada catatan kehadiran.</div>')+'</div>'
+    +'<div class="card"><h3>Riwayat Kehadiran</h3>'+(attRows.length? '<table><thead><tr><th>Tanggal</th><th>Status</th><th>Keterangan</th></tr></thead><tbody>'+attRows.map(function(a){ return '<tr><td>'+esc(fmtDate(a.date))+'</td><td>'+esc(a.status)+'</td><td>'+esc(a.note||'')+'</td></tr>'; }).join('')+'</tbody></table>' : '<div class="empty">Belum ada catatan kehadiran.</div>')+'</div>'
     +'<div class="card"><h3>Catatan Perkembangan</h3>'+(notes.length? notes.map(function(n){ return '<p style="margin:8px 0"><b class="gold">'+esc(n.kind)+'</b> — '+esc(n.text)+'<br><span class="small muted">'+esc(n.by)+' &bull; '+esc(fmtDate(n.date))+'</span></p>'; }).join('') : '<div class="empty">Belum ada catatan perkembangan dari pelatih / Alumni.</div>')+'</div>'
     +'<footer class="site">&copy; 2026 Pencak Organisasi Tempeh</footer></div>';
   window.scrollTo(0,0);
@@ -1323,7 +1358,7 @@ function backFromProfil(){
 /* ---------------- Kerangka aplikasi per peran ---------------- */
 var ROLE_LABEL={ admin_utama:'Admin Utama', admin_ranting:'Admin Ranting', siswa:'Siswa', alumni:'Alumni', operator:'Operator' };
 function menusFor(role){
-  if(role==='siswa') return [['beranda','Beranda'],['jadwal','Jadwal'],['program','Program'],['kas','Kas Saya'],['kartu','Kartu Saya'],['pengaturan','Pengaturan']];
+  if(role==='siswa') return [['beranda','Beranda'],['absen','Absen QR'],['jadwal','Jadwal'],['program','Program'],['kas','Kas Saya'],['kartu','Kartu Saya'],['pengaturan','Pengaturan']];
   if(role==='admin_ranting') return [['beranda','Beranda'],['profil','Profil Ranting'],['anggota','Anggota'],['pendaftaran','Pendaftaran'],['jadwal','Jadwal'],['absensi','Absensi'],['kas','Kas'],['edit','Edit'],['pengaturan','Pengaturan']];
   if(role==='admin_utama') return [['beranda','Beranda'],['ranting','Ranting'],['profil','Profil Ranting'],['anggota','Anggota Semua'],['kasgab','Kas Gabungan'],['laporan','Laporan'],['akun','Akun'],['pengaturan','Pengaturan']];
   if(role==='alumni') return [['beranda','Beranda'],['catat','Catat Perkembangan'],['rekomendasi','Rekomendasi Latihan'],['poin','Poin Saya'],['pengaturan','Pengaturan']];
@@ -1368,7 +1403,7 @@ function renderMenus(){
     return '<button class="chip'+(currentMenu===m[0]?' on':'')+'" onclick="goMenu(\''+m[0]+'\')">'+m[1]+'</button>';
   }).join('');
 }
-function goMenu(m){ if(m==='profil'){ profilEditOpen=false; if(currentUser && currentUser.role!=='admin_ranting') profilRantingSelected=null; } currentMenu=m; renderMenus(); renderContent(); window.scrollTo(0,0); }
+function goMenu(m){ if(typeof stopQrCamera==='function') stopQrCamera(); if(m==='profil'){ profilEditOpen=false; if(currentUser && currentUser.role!=='admin_ranting') profilRantingSelected=null; } currentMenu=m; renderMenus(); renderContent(); window.scrollTo(0,0); }
 function myStudent(){ return currentUser&&currentUser.studentKta? studentByKta(currentUser.studentKta):null; }
 function scopeRanting(){ /* ranting yang boleh dikelola user ini; null = semua */
   if(currentUser.role==='admin_ranting'||currentUser.role==='alumni') return currentUser.rantingNum;
@@ -1390,6 +1425,7 @@ function renderContent(){
   else if(m==='anggota') html=viewAnggota();
   else if(m==='pendaftaran') html=viewPendaftaran();
   else if(m==='absensi') html=viewAbsensi();
+  else if(m==='absen') html=viewAbsenQr();
   else if(m==='edit') html=viewEditRanting();
   else if(m==='profil') html=viewProfilRanting();
   else if(m==='ranting') html=viewRantingAU();
@@ -1414,13 +1450,19 @@ function afterRender(){
   document.querySelectorAll('[data-qris]').forEach(function(el){
     drawQr(el, el.getAttribute('data-qris'));
   });
+  document.querySelectorAll('[data-qr-absen]').forEach(function(el){
+    drawQrSize(el, el.getAttribute('data-qr-absen'), 6, 8);
+  });
 }
 function drawQr(el, text){
   if(!text){ el.innerHTML='<span style="display:block;width:74px;color:#333;font-size:9.5px;line-height:1.25;font-weight:700">QRIS belum diatur Admin Ranting</span>'; return; }
+  drawQrSize(el, text, 4, 0);
+}
+function drawQrSize(el, text, cell, margin){
   if(!window.qrcode){ el.innerHTML='<span style="display:block;width:150px;word-break:break-all;color:#333;font-size:10px;line-height:1.3">'+esc(text)+'</span>'; return; }
   try{
     var qr=qrcode(0,'M'); qr.addData(text); qr.make();
-    el.innerHTML=qr.createImgTag(4,0,'QRIS Pembayaran');
+    el.innerHTML=qr.createImgTag(cell||4, margin||0, 'Kode QR');
   }catch(e){ el.innerHTML='<span style="display:block;width:150px;word-break:break-all;color:#333;font-size:10px;line-height:1.3">'+esc(text)+'</span>'; }
 }
 
@@ -1441,7 +1483,7 @@ function viewBeranda(){
       +'<div class="stat"><b style="font-size:21px;padding-top:5px">'+esc(kas.status)+'</b><span>Status kas '+esc(monthLabel(monthKey()))+'</span></div></div>'
       +'<h3 style="color:var(--gold2);margin-top:20px">Kartu Anggota</h3>'+ktaFrontHTML(s)
       +'<div class="btnrow"><button class="btn gold" onclick="goMenu(\'kartu\')">Buka Kartu Saya (Depan + Belakang)</button>'
-      +'<button class="btn" onclick="goMenu(\'jadwal\')">Lihat Jadwal</button></div>'
+      +'<button class="btn" onclick="goMenu(\'jadwal\')">Lihat Jadwal</button><button class="btn gold" onclick="goMenu(\'absen\')">📷 Absen QR</button></div>'
       +dlPanelSiswaHTML();
     return h;
   }
@@ -1554,6 +1596,7 @@ function viewSiswaList(){
   var h='<p style="margin-top:22px"><button class="btn small" onclick="goMenu(\'beranda\')">&larr; Kembali ke Beranda</button></p>'
     +'<h2 class="section-title">DAFTAR SISWA AKTIF</h2>'
     +'<p class="muted" style="margin-top:0">'+(scoped? 'Siswa aktif '+esc(scoped.name)+', urut nama A–Z.' : 'Semua siswa aktif dari semua ranting, urut nama A–Z.')+' Klik satu nama untuk membuka data diri lengkap siswa itu.</p>'
+    +'<div class="btnrow"><button class="btn gold" onclick="goMenu(\'absen\')">📷 Absen QR — Pindai QR Ranting</button></div>'
     +'<label class="f" for="siswa-list-search">Cari Nama Siswa</label>'
     +'<input type="text" id="siswa-list-search" placeholder="Ketik nama siswa…" oninput="filterSiswaList()" autocomplete="off" />'
     +'<div id="siswa-list-body" style="margin-top:6px">'+siswaListRowsHTML(siswaListData())+'</div>';
@@ -2374,7 +2417,7 @@ function viewAbsensi(){
   list.forEach(function(s){
     var existing=DB.attendance.filter(function(a){ return a.kta===s.kta && a.date===today; })[0];
     var cur=attDraft[s.kta]||(existing?existing.status:'');
-    h+='<p style="margin:10px 0"><b>'+esc(s.name)+'</b> <span class="small muted">'+esc(s.kta)+' &bull; '+esc((rantingByNum(s.rantingNum)||{}).name||'')+'</span><br>'
+    h+='<p style="margin:10px 0"><b>'+esc(s.name)+'</b> <span class="small muted">'+esc(s.kta)+' &bull; '+esc((rantingByNum(s.rantingNum)||{}).name||'')+'</span>'+((existing&&existing.note)? '<br><span class="small gold">'+esc(existing.note)+'</span>' : '')+'<br>'
       +'<span class="attbtns">'+['Hadir','Izin','Sakit','Alpa'].map(function(st){ return '<button class="'+(cur===st?'sel-'+st:'')+'" onclick="setAtt(\''+s.kta+'\',\''+st+'\')">'+st+'</button>'; }).join('')+'</span></p>';
   });
   h+='</div>';
@@ -2390,11 +2433,17 @@ function saveAttendance(){
   var today=new Date().toISOString().slice(0,10); var n=0;
   var jobs=[];
   Object.keys(attDraft).forEach(function(kta){
+    var _s=studentByKta(kta);
     DB.attendance=DB.attendance.filter(function(a){ return !(a.kta===kta&&a.date===today); });
-    DB.attendance.push({ kta:kta, date:today, status:attDraft[kta], scheduleId:null }); n++;
+    var _rec={ kta:kta, date:today, status:attDraft[kta], scheduleId:null, rantingNum:_s?_s.rantingNum:null, homeRantingNum:_s?_s.rantingNum:null, note:'' };
+    DB.attendance.push(_rec); n++;
     /* Kunci (siswa, tanggal): simpan ulang di hari yang sama harus
-       MEMPERBARUI baris lama, bukan menambah duplikat / gagal. */
-    jobs.push(sbSync('attendance', { student_kta:kta, tanggal:today, status:attDraft[kta] }, { student_kta:kta, tanggal:today }));
+       MEMPERBARUI baris lama, bukan menambah duplikat / gagal.
+       Baris server memakai kolom ASLI tabel attendance lewat
+       attendanceServerRow() — student_kta / tanggal TIDAK ADA di
+       tabel itu, jadi kiriman lama selalu ditolak server. */
+    var _row=attendanceServerRow(_rec);
+    if(_row) jobs.push(sbSync('attendance', _row, { student_id:_row.student_id, date:today }, _row));
   });
   attDraft={};
   renderContent();
@@ -2410,14 +2459,258 @@ function scanAttend(){
   if(scope!==null && s.rantingNum!==scope){ msg.style.color='var(--bad)'; msg.textContent='Siswa ini dari ranting lain — di luar cakupan kamu.'; return; }
   var today=new Date().toISOString().slice(0,10);
   DB.attendance=DB.attendance.filter(function(a){ return !(a.kta===s.kta&&a.date===today); });
-  DB.attendance.push({ kta:s.kta, date:today, status:'Hadir', scheduleId:null });
-  sbSync('attendance', { student_kta:s.kta, tanggal:today, status:'Hadir' }, { student_kta:s.kta, tanggal:today }).then(function(res){
+  var _rec={ kta:s.kta, date:today, status:'Hadir', scheduleId:null, rantingNum:s.rantingNum, homeRantingNum:s.rantingNum, note:'' };
+  DB.attendance.push(_rec);
+  var _row=attendanceServerRow(_rec);
+  var _p=_row? sbSync('attendance', _row, { student_id:_row.student_id, date:today }, _row) : Promise.resolve({ ok:false, error:'siswa belum ada di server' });
+  _p.then(function(res){
     if(!res.ok) toast('Kehadiran tercatat di sesi ini, TAPI gagal tersimpan ke server ('+res.error+'). Catat ulang saat koneksi lebih baik.');
   });
   msg.style.color='var(--ok)'; msg.textContent='Tercatat HADIR: '+s.name+' ('+s.kta+') — '+fmtDate(today);
   document.getElementById('scan-kta').value='';
   setTimeout(renderContent, 900);
 }
+
+
+/* ---------------- Absen QR ----------------
+   ATURAN ISI QR (disepakati): QR hanya dibuat dari 5 data ranting —
+   nama ranting, nama pelatih, nomor WA pelatih, tempat latihan, dan
+   iuran — plus penanda tipe dan nomor ranting. Jadwal, program, kas,
+   data siswa, dan absen TIDAK masuk isi QR, jadi QR BERUBAH saat
+   salah satu dari 5 data itu diubah dan TIDAK BERUBAH saat jadwal /
+   program / kas diubah. Dipakai LANGSUNG dari kolom ranting
+   (r.pelatih / r.waPelatih), TANPA fallback ke data siswa atau
+   pengaturan — supaya QR tidak ikut berubah saat data lain berubah.
+   Satu QR berlaku untuk semua jadwal latihan ranting itu. */
+function qrAbsenPayload(r){
+  return JSON.stringify({ t:'POT-ABSEN', ranting:r.num, nama:r.name||'', pelatih:r.pelatih||'', wa:waNum(r.waPelatih||''), tempat:r.tempat||'', iuran:r.iuran||0 });
+}
+function qrAbsenParse(text){
+  try{ var o=JSON.parse(String(text||'').trim()); if(!o||o.t!=='POT-ABSEN'||!o.ranting) return null; return o; }
+  catch(e){ return null; }
+}
+/* schedule_id WAJIB terisi (NOT NULL) di tabel attendance server,
+   padahal QR berlaku untuk SEMUA jadwal — jadi dipakai jadwal
+   pertama ranting tempat absen (bila ada); bila ranting itu belum
+   punya jadwal sama sekali, dipakai jadwal ranting mana pun; bila
+   server masih kosong sama sekali, dikirim 0 sebagai penanda
+   "tanpa jadwal tertentu". SQL attendance-qr-columns.sql membuat
+   kolom ini boleh kosong, supaya 0 tidak lagi diperlukan. */
+function qrAbsenScheduleId(attendedNum){
+  var list=DB.schedules.filter(function(x){ return x.rantingNum===attendedNum && x.serverId!=null; });
+  if(!list.length) list=DB.schedules.filter(function(x){ return x.serverId!=null; });
+  if(list.length) return list[0].serverId;
+  return 0;
+}
+/* Baris server untuk satu catatan absensi, memakai kolom ASLI tabel
+   attendance (schedule_id, student_id, date, status, marked_by —
+   marked_by boleh kosong). Kolom attended_ranting_num /
+   home_ranting_num / attendance_note ikut dikirim; bila SQL
+   attendance-qr-columns.sql BELUM dijalankan, mesin buang-kolom di
+   sbSync membuang ketiganya otomatis dan baris inti tetap tersimpan.
+   Kembalikan null bila siswa belum punya baris di server (tidak ada
+   student_id yang bisa dikirim) — pemanggil harus menyimpannya
+   lokal saja dan memberi tahu dengan jujur. */
+function attendanceServerRow(a){
+  var s=studentByKta(a.kta); if(!s || s.serverId==null) return null;
+  var row={ schedule_id:(a.scheduleId? a.scheduleId : qrAbsenScheduleId(a.rantingNum!=null? a.rantingNum : s.rantingNum)), student_id:s.serverId, date:a.date, status:a.status };
+  if(a.rantingNum!==undefined && a.rantingNum!==null) row.attended_ranting_num=a.rantingNum;
+  if(a.homeRantingNum!==undefined && a.homeRantingNum!==null) row.home_ranting_num=a.homeRantingNum;
+  if(a.note) row.attendance_note=a.note;
+  return row;
+}
+/* Cek duplikat di server sebelum simpan: satu siswa tidak boleh absen
+   2x di hari dan ranting yang sama. Bila kolom attended_ranting_num
+   sudah ada, baris hari ini di ranting LAIN tidak menghalangi; bila
+   kolom itu belum ada, baris hari ini apa pun dianggap sudah absen
+   (pilihan aman — keterangan rantingnya belum bisa dibedakan server).
+   Galat pemeriksaan TIDAK memblokir absen. */
+function qrServerDupCheck(serverId, date, attendedNum){
+  if(!sb) return Promise.resolve(false);
+  function q(cols){
+    return sbTimeout(sb.from('attendance').select(cols).eq('student_id', serverId).eq('date', date), 9000).then(function(res){
+      if(res && res.error){
+        if(cols.indexOf('attended_ranting_num')>=0 && sbMissingColumn(res.error)==='attended_ranting_num') return q('id');
+        return false;
+      }
+      var rows=(res && res.data)||[];
+      if(!rows.length) return false;
+      if(cols.indexOf('attended_ranting_num')>=0){
+        return rows.some(function(x){ return x.attended_ranting_num===attendedNum || x.attended_ranting_num===null || x.attended_ranting_num===undefined; });
+      }
+      return true;
+    }).catch(function(){ return false; });
+  }
+  return q('id,attended_ranting_num');
+}
+function qrRecordLocal(o, s){
+  var today=new Date().toISOString().slice(0,10);
+  var cross=o.ranting!==s.rantingNum;
+  var r=rantingByNum(o.ranting);
+  return { kta:s.kta, date:today, status:'Hadir', scheduleId:qrAbsenScheduleId(o.ranting),
+    rantingNum:o.ranting, homeRantingNum:s.rantingNum,
+    note:(cross? 'latihan di '+r.name : ''), viaQr:true };
+}
+function recordQrAttendance(o, kta, msgEl){
+  var s=studentByKta(kta);
+  var r=rantingByNum(o.ranting);
+  function fail(m){ if(msgEl){ msgEl.style.color='var(--bad)'; msgEl.textContent=m; } else toast(m); return false; }
+  if(!s) return fail('Data siswa tidak ditemukan.');
+  if(!r) return fail('Ranting pada QR tidak dikenal (nomor ranting '+o.ranting+').');
+  var today=new Date().toISOString().slice(0,10);
+  var dup=DB.attendance.filter(function(a){ return a.kta===s.kta && a.date===today && ((a.rantingNum==null? s.rantingNum : a.rantingNum)===o.ranting); })[0];
+  if(dup) return fail('Sudah absen hari ini di '+r.name+' — satu siswa hanya bisa absen 1 kali per hari di ranting yang sama. Absen di ranting lain tetap bisa.');
+  var rec=qrRecordLocal(o, s);
+  DB.attendance.push(rec);
+  var home=rantingByNum(s.rantingNum);
+  var okMsg='Tercatat HADIR: '+s.name+' ('+s.kta+') — '+fmtDate(today)+' di '+r.name+(o.ranting!==s.rantingNum? ' (latihan di '+r.name+'; ranting asal: '+(home?home.name:'-')+')' : '');
+  function done(){
+    if(msgEl){ msgEl.style.color='var(--ok)'; msgEl.textContent=okMsg; }
+    toast(okMsg);
+  }
+  if(!s.serverId){
+    done();
+    toast(okMsg+' — tersimpan di sesi ini saja: data siswa ini belum ada di server, jadi belum bisa tersimpan ke server.');
+    return true;
+  }
+  sbMarkDirty('attendance', s.kta);
+  qrServerDupCheck(s.serverId, today, o.ranting).then(function(serverDup){
+    if(serverDup){
+      DB.attendance=DB.attendance.filter(function(a){ return a!==rec; });
+      fail('Sudah absen hari ini di '+r.name+' menurut data server — satu siswa hanya bisa absen 1 kali per hari di ranting yang sama.');
+      return;
+    }
+    var row=attendanceServerRow(rec);
+    sbPush('attendance', row).then(function(res){
+      if(res.ok){
+        done();
+        if(res.dropped && res.dropped.length) toast('Kehadiran tercatat. Catatan: kolom '+res.dropped.join(', ')+' belum ada di tabel Supabase, jadi keterangan ranting belum ikut tersimpan ke server — jalankan SQL attendance-qr-columns.sql supaya lengkap.');
+      } else {
+        if(msgEl){ msgEl.style.color='var(--bad)'; msgEl.textContent='Kehadiran tercatat di sesi ini, TAPI gagal tersimpan ke server ('+res.error+').'; }
+        toast('Kehadiran tercatat di sesi ini, TAPI gagal tersimpan ke server ('+res.error+'). Catat ulang saat koneksi lebih baik.');
+      }
+    });
+  });
+  return true;
+}
+/* ---------------- Halaman Absen QR (Siswa) ---------------- */
+var qrScanner=null, qrScanning=false, qrScanKta='';
+function qrCurrentStudent(){
+  if(currentUser && currentUser.role==='siswa') return myStudent();
+  return studentByKta(qrScanKta);
+}
+function qrSetStudentLabel(){
+  var s=studentByKta(qrScanKta); var el=document.getElementById('qr-student-label');
+  if(el && s){ var home=rantingByNum(s.rantingNum); el.innerHTML='Absen sebagai: <b>'+esc(s.name)+'</b> ('+esc(s.kta)+') &bull; Ranting asal: <b>'+esc(home?home.name:'-')+'</b>'; }
+}
+function viewAbsenQr(){
+  var s=null, picker='';
+  if(currentUser.role==='siswa'){
+    s=myStudent();
+    if(!s) return '<div class="card"><h3>Data siswa belum terhubung</h3><p class="muted">Akun ini belum terhubung ke data siswa. Hubungi Admin Ranting.</p></div>';
+    qrScanKta=s.kta;
+  } else {
+    var scope=scopeRanting();
+    var list=DB.students.filter(function(x){ return x.status==='Aktif' && (scope===null || x.rantingNum===scope); });
+    if(!list.length) return '<div class="card"><h3>Belum ada siswa aktif</h3><p class="muted">Belum ada siswa aktif pada cakupan ini.</p></div>';
+    if(!qrScanKta || !studentByKta(qrScanKta)) qrScanKta=list[0].kta;
+    picker='<label class="f" for="qr-student">Siswa yang absen</label><select id="qr-student" onchange="qrScanKta=this.value;qrSetStudentLabel()">'+list.map(function(x){ return '<option value="'+esc(x.kta)+'"'+(x.kta===qrScanKta?' selected':'')+'>'+esc(x.name)+' ('+esc(x.kta)+')</option>'; }).join('')+'</select>';
+    s=studentByKta(qrScanKta);
+  }
+  var home=rantingByNum(s.rantingNum);
+  var h='<h2 class="section-title">ABSEN QR</h2>'
+    +'<div class="card"><h3>Pindai QR Absen Ranting</h3>'
+    +'<p class="muted" style="margin-top:0">Tekan <b>Buka Kamera</b> lalu arahkan kamera ke QR absen ranting — QR yang sama berlaku untuk semua jadwal latihan. Bila absen di ranting lain, tercatat sebagai <b>latihan di ranting itu</b> dan tetap dihitung di kehadiran kamu.</p>'
+    +'<p id="qr-student-label">Absen sebagai: <b>'+esc(s.name)+'</b> ('+esc(s.kta)+') &bull; Ranting asal: <b>'+esc(home?home.name:'-')+'</b></p>'
+    +picker
+    +'<div id="qr-reader" style="margin:8px 0"></div>'
+    +'<div class="btnrow"><button class="btn gold" id="qr-start-btn" onclick="startQrCamera()">📷 Buka Kamera &amp; Pindai QR</button>'
+    +'<button class="btn" id="qr-stop-btn" onclick="stopQrCamera()" disabled>Tutup Kamera</button></div>'
+    +'<p class="small" id="qr-msg" role="alert"></p></div>'
+    +'<div class="card"><h3>Cara Manual (bila kamera tidak tersedia)</h3>'
+    +'<p class="muted" style="margin-top:0">Pilih ranting tempat kamu latihan hari ini, lalu tekan Catat Hadir — hasilnya sama seperti memindai QR ranting itu. Atau tempel isi kode QR (teks) yang dibaca aplikasi lain.</p>'
+    +'<label class="f" for="qr-manual-ranting">Ranting tempat latihan</label>'
+    +'<select id="qr-manual-ranting">'+DB.ranting.map(function(x){ return '<option value="'+x.num+'"'+(x.num===s.rantingNum?' selected':'')+'>'+esc(x.name)+'</option>'; }).join('')+'</select>'
+    +'<div class="btnrow"><button class="btn gold" onclick="qrManualRanting()">Catat Hadir di Ranting Ini</button></div>'
+    +'<div class="hr"></div>'
+    +'<label class="f" for="qr-manual-text">Tempel isi kode QR (teks)</label>'
+    +'<textarea id="qr-manual-text" rows="2" placeholder=\'{"t":"POT-ABSEN", ...}\'></textarea>'
+    +'<div class="btnrow"><button class="btn" onclick="qrManualPaste()">Proses Kode QR</button></div>'
+    +'<p class="small" id="qr-manual-msg" role="alert"></p></div>'
+    +'<div class="card"><h3>Yang perlu diketahui</h3>'
+    +'<p class="small muted" style="margin:4px 0">Satu siswa hanya bisa absen <b>1 kali per hari di ranting yang sama</b> — pindaian kedua di hari dan ranting yang sama ditolak. Absen di ranting lain di hari yang sama tetap bisa dan tercatat “latihan di ranting” itu.</p>'
+    +'<p class="small muted" style="margin:4px 0">Hasil absen langsung tersimpan ke server dan muncul di menu <b>Absensi</b> serta dihitung di <b>keaktifan / persentase kehadiran</b> kamu.</p></div>';
+  return h;
+}
+function startQrCamera(){
+  var msg=document.getElementById('qr-msg');
+  function fail(m){ if(msg){ msg.style.color='var(--bad)'; msg.textContent=m; } }
+  if(!window.Html5Qrcode){
+    if(msg){ msg.style.color=''; msg.textContent='Memuat pustaka kamera…'; }
+    loadLib('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js').then(function(ok){
+      if(ok && window.Html5Qrcode) startQrCamera();
+      else fail('Pustaka pemindai kamera tidak bisa dimuat (periksa koneksi internet). Pakai cara manual di bawah.');
+    });
+    return;
+  }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ fail('Kamera tidak tersedia di perangkat / browser ini. Pakai cara manual di bawah.'); return; }
+  var s=qrCurrentStudent(); if(!s){ fail('Pilih siswa dulu.'); return; }
+  if(qrScanning) return;
+  try{
+    qrScanner=new Html5Qrcode('qr-reader');
+    qrScanner.start({ facingMode:'environment' }, { fps:10, qrbox:{ width:250, height:250 } }, function(text){
+      stopQrCamera();
+      var o=qrAbsenParse(text);
+      if(!o){ fail('QR ini bukan QR Absen Pencak Organisasi Tempeh. Pindai QR absen dari halaman Ranting.'); return; }
+      var st=qrCurrentStudent(); if(!st){ fail('Data siswa tidak ditemukan.'); return; }
+      recordQrAttendance(o, st.kta, document.getElementById('qr-msg'));
+    }, function(){ /* galat baca tiap frame: abaikan, kamera tetap jalan */ }).then(function(){
+      qrScanning=true;
+      var b=document.getElementById('qr-start-btn'); if(b) b.disabled=true;
+      var t=document.getElementById('qr-stop-btn'); if(t) t.disabled=false;
+      if(msg){ msg.style.color=''; msg.textContent='Kamera aktif — arahkan ke QR absen ranting.'; }
+    }).catch(function(e){ fail('Kamera tidak bisa dibuka ('+((e&&e.message)||e)+'). Izinkan akses kamera, atau pakai cara manual di bawah.'); });
+  }catch(e){ fail('Kamera tidak bisa dibuka. Pakai cara manual di bawah.'); }
+}
+function stopQrCamera(){
+  var p=null;
+  if(qrScanner && qrScanning){ try{ p=qrScanner.stop(); }catch(e){} }
+  qrScanning=false; qrScanner=null;
+  var b=document.getElementById('qr-start-btn'); if(b) b.disabled=false;
+  var t=document.getElementById('qr-stop-btn'); if(t) t.disabled=true;
+  var el=document.getElementById('qr-reader');
+  if(p && p.then) p.then(function(){ if(el) el.innerHTML=''; }).catch(function(){ if(el) el.innerHTML=''; });
+  else if(el) el.innerHTML='';
+}
+function qrManualPaste(){
+  var msg=document.getElementById('qr-manual-msg');
+  var s=qrCurrentStudent();
+  if(!s){ if(msg){ msg.style.color='var(--bad)'; msg.textContent='Pilih siswa dulu.'; } return; }
+  var t=document.getElementById('qr-manual-text').value.trim();
+  var o=qrAbsenParse(t);
+  if(!o){ if(msg){ msg.style.color='var(--bad)'; msg.textContent='Tempelan itu bukan kode QR Absen Pencak Organisasi Tempeh.'; } return; }
+  recordQrAttendance(o, s.kta, msg);
+}
+function qrManualRanting(){
+  var msg=document.getElementById('qr-manual-msg');
+  var s=qrCurrentStudent();
+  if(!s){ if(msg){ msg.style.color='var(--bad)'; msg.textContent='Pilih siswa dulu.'; } return; }
+  var num=parseInt(document.getElementById('qr-manual-ranting').value,10);
+  var r=rantingByNum(num);
+  if(!r){ if(msg){ msg.style.color='var(--bad)'; msg.textContent='Ranting tidak dikenal.'; } return; }
+  recordQrAttendance(qrAbsenParse(qrAbsenPayload(r)), s.kta, msg);
+}
+/* ---------------- Kartu QR Absen di Profil Ranting ---------------- */
+function qrAbsenCardHTML(r){
+  var payload=qrAbsenPayload(r);
+  return '<div class="card" id="qr-print"><h3>QR Absen Ranting</h3>'
+    +'<p class="muted" style="margin-top:0">Satu QR untuk <b>semua jadwal latihan</b> '+esc(r.name)+'. Siswa memindainya dari menu <b>Absen QR</b> di halaman Siswa — kameranya langsung terbuka. QR ini otomatis berubah bila <b>nama ranting, nama pelatih, nomor WA pelatih, tempat latihan, atau iuran</b> diubah; jadwal, program, kas, dan data siswa tidak mengubah QR ini.</p>'
+    +'<div style="display:flex;justify-content:center;padding:8px 0"><div data-qr-absen="'+esc(payload)+'" style="background:#fff;padding:10px;border-radius:10px"></div></div>'
+    +'<p style="text-align:center;margin:4px 0"><b>'+esc(r.name)+'</b><br><span class="small muted">Pelatih: '+esc(r.pelatih||'-')+' &bull; WA: '+esc(rantingWaPelatih(r)||'-')+'<br>Tempat: '+esc(r.tempat||'-')+' &bull; Iuran: '+rp(r.iuran)+'/bulan</span></p>'
+    +'<p class="small muted" style="word-break:break-all">Isi QR: '+esc(payload)+'</p>'
+    +'<div class="btnrow"><button class="btn gold" onclick="printQrAbsen()">🖨 Cetak QR</button></div></div>';
+}
+function printQrAbsen(){ window.print(); }
 
 /* ---------------- Profil Ranting (Admin Ranting / Operator / Admin Utama) ---------------- */
 function goProfilRanting(num){
@@ -2466,7 +2759,8 @@ function profilDetailHTML(r){
     +'<button class="btn gold" onclick="downloadRantingReport(\'pdf\','+r.num+')">Unduh PDF Ranting Ini</button>'
     +'<button class="btn" onclick="downloadRantingReport(\'excel\','+r.num+')">Unduh Excel Ranting Ini</button>'
     +'</div>'
-    +'</div>';
+    +'</div>'
+    +qrAbsenCardHTML(r);
   return h;
 }
 function downloadRantingReport(fmt, num){
