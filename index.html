@@ -1112,7 +1112,11 @@ function seedToServer(){
   }
   var seedStu=null;
   DB.students.forEach(function(st){ if(st.kta==='PO-R-I-01.001') seedStu=st; });
-  if(seedStu && !_serverStudentKtas['PO-R-I-01.001']){
+  /* Jangan sisipkan bila barisnya sudah ada di server — baik dengan
+     nomor baru maupun nomor lama (nomor lama ditangani migrasi
+     migrateLegacyKtas yang jalan lebih dulu; tanpa cek nomor lama,
+     siswa yang sama bisa tersisip dua kali dengan dua nomor KTA). */
+  if(seedStu && !_serverStudentKtas['PO-R-I-01.001'] && !_serverStudentKtas['PO-R-I-001']){
     saveStudentToServer(seedStu).then(function(res){
       if(res && res.ok) _serverStudentKtas['PO-R-I-01.001']=true;
     });
